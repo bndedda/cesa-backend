@@ -20,6 +20,7 @@ const allowedOrigins = [
   'https://cesa-admin.up.railway.app', // Production admin on Railway
   'https://admin.cesadesigns.com', // Custom domain - admin
   'https://www.admin.cesadesigns.com', // WWW admin domain
+  'https://cesa-designs-admin-production.up.railway.app', // <-- ADDED: Your actual admin frontend
   
   // API Documentation/Testing
   'https://cesa-api.up.railway.app', // API itself for documentation
@@ -339,7 +340,8 @@ const adminOnly = (req, res, next) => {
     'https://cesa-admin.up.railway.app',
     'https://admin.cesadesigns.com',
     'http://localhost:5174',
-    'http://localhost:3001'
+    'http://localhost:3001',
+    'https://cesa-designs-admin-production.up.railway.app' // <-- ADDED: Your actual admin frontend
   ];
   
   // In production, add proper authentication
@@ -998,6 +1000,7 @@ app.listen(PORT, () => {
 │   • Local dev (5173, 5174, 3000, 3001)              
 │   • Railway apps (cesa-shop, cesa-admin, cesa-api)  
 │   • Custom domains (cesadesigns.com, admin.cesadesigns.com)
+│   • Your admin frontend: https://cesa-designs-admin-production.up.railway.app
 │                                                     │
 │ 📊 Endpoints:                                       
 │   • Public: /api/health, /api/products, /api/orders 
