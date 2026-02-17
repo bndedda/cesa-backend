@@ -793,6 +793,34 @@ app.post('/api/admin/inventory/bulk-update', adminOnly, async (req, res) => {
   }
 });
 
+// Delete product (admin only) - NEW ROUTE
+app.delete('/api/admin/inventory/products/:id', adminOnly, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // First delete related inventory transactions (due to foreign key)
+    await client.query('DELETE FROM inventory_transactions WHERE product_id = $1', [req.params.id]);
+
+    // Delete the product
+    const result = await client.query('DELETE FROM products WHERE id = $1 RETURNING *', [req.params.id]);
+
+    if (result.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Product not found' });
+    }
+
+    await client.query('COMMIT');
+    res.json({ success: true, message: 'Product deleted successfully', product: result.rows[0] });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error deleting product:', err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
 // Get inventory transactions (admin only)
 app.get('/api/admin/inventory/transactions', adminOnly, async (req, res) => {
   const { product_id, start_date, end_date, type, page = 1, limit = 50 } = req.query;
