@@ -13,6 +13,8 @@ const allowedOrigins = [
   'https://cesa-shop.up.railway.app', // Production shop on Railway
   'https://cesadesigns.com', // Custom domain - shop
   'https://www.cesadesigns.com', // WWW custom domain
+  // YOUR ACTUAL FRONTEND URL (from logs)
+  'https://cesa-designs-production.up.railway.app',
   
   // Private Admin (cesa-admin)
   'http://localhost:5174', // Local dev - admin
@@ -1026,7 +1028,8 @@ app.use((err, req, res, next) => {
 // ========== START SERVER ==========
 
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
+// Bind to 0.0.0.0 to accept connections from anywhere (required for Railway)
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`
 ┌─────────────────────────────────────────────────────┐
 │     🚀 Cesa Designs API - Multi-App Architecture    │
@@ -1039,12 +1042,14 @@ app.listen(PORT, () => {
 │   • Shop: https://cesa-shop.up.railway.app          
 │   • Admin: https://cesa-admin.up.railway.app        
 │   • API: https://cesa-api.up.railway.app            
+│   • Your frontend: https://cesa-designs-production.up.railway.app
 │                                                     │
 │ 🌐 CORS Enabled for:                                
 │   • Local dev (5173, 5174, 3000, 3001)              
 │   • Railway apps (cesa-shop, cesa-admin, cesa-api)  
 │   • Custom domains (cesadesigns.com, admin.cesadesigns.com)
 │   • Your admin frontend: https://cesa-designs-admin-production.up.railway.app
+│   • Your shop frontend: https://cesa-designs-production.up.railway.app
 │                                                     │
 │ 📊 Endpoints:                                       
 │   • Public: /api/health, /api/products, /api/orders,
