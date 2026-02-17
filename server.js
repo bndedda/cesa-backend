@@ -20,7 +20,7 @@ const allowedOrigins = [
   'https://cesa-admin.up.railway.app', // Production admin on Railway
   'https://admin.cesadesigns.com', // Custom domain - admin
   'https://www.admin.cesadesigns.com', // WWW admin domain
-  'https://cesa-designs-admin-production.up.railway.app', // <-- ADDED: Your actual admin frontend
+  'https://cesa-designs-admin-production.up.railway.app', // Your actual admin frontend
   
   // API Documentation/Testing
   'https://cesa-api.up.railway.app', // API itself for documentation
@@ -121,6 +121,23 @@ app.get('/api/categories', async (req, res) => {
       LEFT JOIN collections col ON c.id = col.category_id
       GROUP BY c.id
       ORDER BY c.display_order
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get all collections (used by admin frontend for dropdowns)
+app.get('/api/collections', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        c.*,
+        cat.name as category_name
+      FROM collections c
+      JOIN categories cat ON c.category_id = cat.id
+      ORDER BY cat.name, c.name
     `);
     res.json(result.rows);
   } catch (err) {
@@ -341,7 +358,7 @@ const adminOnly = (req, res, next) => {
     'https://admin.cesadesigns.com',
     'http://localhost:5174',
     'http://localhost:3001',
-    'https://cesa-designs-admin-production.up.railway.app' // <-- ADDED: Your actual admin frontend
+    'https://cesa-designs-admin-production.up.railway.app' // Your actual admin frontend
   ];
   
   // In production, add proper authentication
@@ -566,7 +583,6 @@ app.get('/api/admin/inventory', adminOnly, async (req, res) => {
       GROUP BY p.id, c.name, c.slug, col.name
       ORDER BY p.created_at DESC
     `);
-    
     res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1003,7 +1019,8 @@ app.listen(PORT, () => {
 │   • Your admin frontend: https://cesa-designs-admin-production.up.railway.app
 │                                                     │
 │ 📊 Endpoints:                                       
-│   • Public: /api/health, /api/products, /api/orders 
+│   • Public: /api/health, /api/products, /api/orders,
+│             /api/categories, /api/collections (NEW!)
 │   • Admin: /api/admin/* (protected)                 
 │                                                     │
 │ ⚡ Database Pool: 20 max connections                 
