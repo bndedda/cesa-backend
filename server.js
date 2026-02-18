@@ -5,6 +5,9 @@ require('dotenv').config();
 
 const app = express();
 
+// Log the allowed origins at startup
+console.log('🚀 Starting server with allowed origins:', allowedOrigins);
+
 // Configure CORS for multi-app architecture
 const allowedOrigins = [
   // Public Shop (cesa-shop)
@@ -38,11 +41,12 @@ const corsOptions = {
     
     // Check if origin is allowed
     if (allowedOrigins.indexOf(origin) !== -1) {
+      console.log(`✅ Allowed CORS for origin: ${origin}`); // <-- ADDED DEBUG LOG
       callback(null, true);
     } else {
       // For development/testing, you might want to allow all
       if (process.env.NODE_ENV === 'development') {
-        console.warn(`⚠️  Allowing origin in dev: ${origin}`);
+        console.warn(`⚠️ Allowing origin in dev: ${origin}`);
         callback(null, true);
       } else {
         console.log(`🚫 Blocked by CORS: ${origin}`);
