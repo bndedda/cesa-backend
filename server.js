@@ -13,10 +13,10 @@ const allowedOrigins = [
   'https://cesa-shop.up.railway.app', // Production shop on Railway
   'https://cesadesigns.com', // Custom domain - shop
   'https://www.cesadesigns.com', // WWW custom domain
+  'https://cesa-designs-online-shop-production.up.railway.app',
   
   // ✅ YOUR ACTUAL FRONTEND URLS (CORRECTED - no hyphen between cesa and designs)
-  'https://cesadesigns-production.up.railway.app', // CORRECT: Actual shop frontend
-  'https://cesa-designs-production.up.railway.app', // Alternative with hyphen (if exists)
+  'https://cesa-designs-online-shop-production.up.railway.app', // CORRECT: Actual shop frontend
   
   // Private Admin (cesa-admin)
   'http://localhost:5174', // Local dev - admin
