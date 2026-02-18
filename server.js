@@ -5,9 +5,6 @@ require('dotenv').config();
 
 const app = express();
 
-// Log the allowed origins at startup
-console.log('🚀 Starting server with allowed origins:', allowedOrigins);
-
 // Configure CORS for multi-app architecture
 const allowedOrigins = [
   // Public Shop (cesa-shop)
@@ -33,6 +30,9 @@ const allowedOrigins = [
   'https://cesa-api.up.railway.app', // API itself for documentation
   'http://localhost:3001', // API local
 ];
+
+// Log the allowed origins at startup (moved AFTER definition)
+console.log('🚀 Starting server with allowed origins:', allowedOrigins);
 
 const corsOptions = {
   origin: function (origin, callback) {
