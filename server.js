@@ -498,6 +498,28 @@ app.patch('/api/admin/orders/:id', adminOnly, async (req, res) => {
   }
 });
 
+// ✅ NEW: Mark order as paid by order number (admin only)
+app.patch('/api/admin/orders/:orderNumber/mark-paid', adminOnly, async (req, res) => {
+  const { orderNumber } = req.params;
+  try {
+    const result = await pool.query(
+      `UPDATE orders 
+       SET payment_status = 'paid', 
+           order_status = 'processing',
+           updated_at = CURRENT_TIMESTAMP
+       WHERE order_number = $1 AND payment_status = 'pending'
+       RETURNING *`,
+      [orderNumber]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Order not found or already paid' });
+    }
+    res.json({ success: true, order: result.rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Get order status history (admin only)
 app.get('/api/admin/orders/:id/history', adminOnly, async (req, res) => {
   try {
@@ -869,6 +891,7 @@ app.listen(PORT, '0.0.0.0', () => {
 │ 📦 Stock endpoints:                                 
 │   • PATCH /api/products/:id/stock  ✅ (NEW)         
 │   • Stock auto-deducted in POST /api/orders         
+│   • PATCH /api/admin/orders/:orderNumber/mark-paid ✅ (NEW)
 └─────────────────────────────────────────────────────┘
   `);
 });
