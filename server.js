@@ -60,11 +60,11 @@ const pool = new Pool({
   connectionTimeoutMillis: 2000,
 });
 
-// ========== EMAIL NOTIFICATION SETUP ==========
+// ========== EMAIL NOTIFICATION SETUP (Port 465 SSL) ==========
 const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST || 'smtp.gmail.com',
-  port: parseInt(process.env.SMTP_PORT) || 587,
-  secure: false,
+  host: 'smtp.gmail.com',
+  port: 465,
+  secure: true,               // SSL (not STARTTLS)
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
@@ -120,15 +120,68 @@ Please check your M‑Pesa messages and mark as paid in the admin panel.
 
   try {
     await transporter.sendMail(mailOptions);
-    console.log(`📧 Admin notification sent for order ${order.order_number}`);
+    console.log(`📧 Admin email sent for order ${order.order_number}`);
   } catch (err) {
-    console.error('Failed to send admin email:', err);
+    console.error('Failed to send admin email:', err.message);
   }
 }
+
+// ========== TELEGRAM NOTIFICATION (Reliable fallback) ==========
+async function sendTelegramNotification(order, customer, items, total, shippingCost) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const chatId = process.env.TELEGRAM_CHAT_ID;
+  if (!token || !chatId) {
+    console.log('⚠️ Telegram not configured – skipping.');
+    return;
+  }
+
+  const itemsText = items.map(item => `• ${item.name} (x${item.quantity}) – KSh ${(item.price * item.quantity).toLocaleString()}`).join('\n');
+
+  const message = `
+🆕 *NEW ORDER* – Pending Payment
+Order #: ${order.order_number}
+Customer: ${customer.name}
+Phone: ${customer.phone}
+Address: ${customer.address || 'Not provided'}
+
+Items:
+${itemsText}
+
+Subtotal: KSh ${(total - shippingCost).toLocaleString()}
+Shipping: KSh ${shippingCost.toLocaleString()}
+Total: KSh ${total.toLocaleString()}
+
+💳 Pay via M‑Pesa PayBill 303030, Account 2035157150
+
+[Mark as paid](${process.env.ADMIN_URL || 'https://cesa-admin.up.railway.app'}/orders)
+  `;
+
+  const url = `https://api.telegram.org/bot${token}/sendMessage`;
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: message,
+        parse_mode: 'Markdown',
+        disable_web_page_preview: true,
+      }),
+    });
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Telegram error:', errorText);
+    } else {
+      console.log(`📱 Telegram notification sent for order ${order.order_number}`);
+    }
+  } catch (err) {
+    console.error('Telegram request failed:', err.message);
+  }
+}
+
 // ========== TEST EMAIL ENDPOINT (remove after verification) ==========
 app.get('/api/test-email', async (req, res) => {
   try {
-    // Ensure transporter is configured
     if (!transporter) {
       throw new Error('Email transporter not configured');
     }
@@ -136,7 +189,7 @@ app.get('/api/test-email', async (req, res) => {
       from: `"Cesa Test" <${process.env.SMTP_USER}>`,
       to: process.env.ADMIN_EMAIL,
       subject: 'Test email from Railway backend',
-      text: 'If you receive this, SMTP is working on Railway.',
+      text: 'If you receive this, SMTP is working on Railway (port 465).',
     });
     res.json({ success: true, message: 'Test email sent', messageId: info.messageId });
   } catch (err) {
@@ -409,14 +462,17 @@ app.post('/api/orders', async (req, res) => {
 
     await client.query('COMMIT');
 
-    // Send admin notification (fire and forget)
+    // Prepare customer info for notifications
     const customerInfo = {
       name: customer?.name || 'Guest',
       email: customer?.email || '',
       phone: customer?.phone || '',
       address: shipping?.address?.fullAddress || '',
     };
+
+    // Send notifications (fire and forget, both email and Telegram)
     sendAdminOrderNotification(result.rows[0], customerInfo, items, total, shippingCost).catch(console.error);
+    sendTelegramNotification(result.rows[0], customerInfo, items, total, shippingCost).catch(console.error);
 
     res.json({
       success: true,
@@ -610,7 +666,7 @@ app.get('/api/admin/orders/stats/dashboard', adminOnly, async (req, res) => {
   }
 });
 
-// ========== ADMIN INVENTORY ENDPOINTS (unchanged, kept for completeness) ==========
+// ========== ADMIN INVENTORY ENDPOINTS (unchanged) ==========
 app.get('/api/admin/inventory', adminOnly, async (req, res) => {
   try {
     const result = await pool.query(`
@@ -726,7 +782,7 @@ app.post('/api/admin/inventory/bulk-update', adminOnly, async (req, res) => {
       await pool.query(
         `INSERT INTO inventory_transactions (product_id, transaction_type, quantity_change, new_quantity, notes)
          VALUES ($1, $2, $3, $4, $5)`,
-        [product_id, reason || 'bulk_adjustment', quantity_change, updateResult.rows[0].stock_quantity, notes || `Bulk update: ${quantity_change > 0 ? '+' : ''}${quantity_change} units`]
+        [product_id, reason || 'bulk_adjustment', quantity_change, updateResult.rows[0].stock_quantity, notes || `Bulk update: ${quantity_change > 0 ? '+' : ''}${quantityChange} units`]
       );
       results.push(updateResult.rows[0]);
     }
@@ -906,7 +962,8 @@ app.listen(PORT, '0.0.0.0', () => {
 │   • API: https://cesa-api.up.railway.app            
 │                                                     │
 │ 🌐 CORS Enabled for all required origins            
-│ 📧 Admin email notifications: ENABLED               
+│ 📧 Admin email: ENABLED (port 465 SSL)              
+│ 📱 Telegram: ENABLED (if tokens provided)           
 │ 📦 Atomic stock deduction: ACTIVE                   
 └─────────────────────────────────────────────────────┘
   `);
