@@ -1,29 +1,19 @@
 const express = require('express');
 const { Pool } = require('pg');
 const cors = require('cors');
+const nodemailer = require('nodemailer');
 require('dotenv').config();
 
 const app = express();
 
 // Configure CORS for multi-app architecture
 const allowedOrigins = [
-  // Public Shop (cesa-shop)
-  'http://localhost:5173', // Local dev - shop
-  'http://localhost:3000', // Alternative local dev
-  'https://cesa-shop.up.railway.app', // Production shop on Railway
-  'https://cesadesigns.com', // Custom domain - shop
-  'https://www.cesadesigns.com', // WWW custom domain
+  'http://localhost:5173', 'http://localhost:3000',
+  'https://cesa-shop.up.railway.app', 'https://cesadesigns.com', 'https://www.cesadesigns.com',
   'https://cesa-designs-online-shop-production.up.railway.app',
-
-  // Private Admin (cesa-admin)
-  'http://localhost:5174', // Local dev - admin
-  'http://localhost:3001', // Alternative local dev admin
-  'https://cesa-admin.up.railway.app', // Production admin on Railway
-  'https://admin.cesadesigns.com', // Custom domain - admin
-  'https://www.admin.cesadesigns.com', // WWW admin domain
+  'http://localhost:5174', 'http://localhost:3001',
+  'https://cesa-admin.up.railway.app', 'https://admin.cesadesigns.com', 'https://www.admin.cesadesigns.com',
   'https://cesa-designs-admin-production.up.railway.app',
-
-  // API Documentation/Testing
   'https://cesa-api.up.railway.app',
 ];
 
@@ -70,8 +60,73 @@ const pool = new Pool({
   connectionTimeoutMillis: 2000,
 });
 
-// ========== HEALTH CHECK ==========
+// ========== EMAIL NOTIFICATION SETUP ==========
+const transporter = nodemailer.createTransport({
+  host: process.env.SMTP_HOST || 'smtp.gmail.com',
+  port: parseInt(process.env.SMTP_PORT) || 587,
+  secure: false,
+  auth: {
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS,
+  },
+});
 
+async function sendAdminOrderNotification(order, customer, items, total, shippingCost) {
+  const adminEmail = process.env.ADMIN_EMAIL || 'cecafabrics@gmail.com';
+  if (!adminEmail) return;
+
+  const itemsListHtml = items.map(item => `<li>${item.name} (x${item.quantity}) – KSh ${(item.price * item.quantity).toLocaleString()}</li>`).join('');
+  const itemsListText = items.map(item => `- ${item.name} (x${item.quantity}) – KSh ${(item.price * item.quantity).toLocaleString()}`).join('\n');
+
+  const mailOptions = {
+    from: `"Cesa Designs Shop" <${process.env.SMTP_USER}>`,
+    to: adminEmail,
+    subject: `🛍️ New Order #${order.order_number} – Pending Payment`,
+    text: `
+New order created – pending payment.
+
+Order #: ${order.order_number}
+Customer: ${customer.name}
+Email: ${customer.email}
+Phone: ${customer.phone}
+Shipping Address: ${customer.address || 'Not provided'}
+
+Items:
+${itemsListText}
+
+Subtotal: KSh ${(total - shippingCost).toLocaleString()}
+Shipping: KSh ${shippingCost.toLocaleString()}
+Total: KSh ${total.toLocaleString()}
+
+Payment: M‑Pesa PayBill 303030, Account 2035157150
+
+Please check your M‑Pesa messages and mark as paid in the admin panel.
+    `,
+    html: `
+      <h2>🛍️ New Order #${order.order_number} – Pending Payment</h2>
+      <p><strong>Customer:</strong> ${customer.name}<br/>
+      <strong>Email:</strong> ${customer.email}<br/>
+      <strong>Phone:</strong> ${customer.phone}<br/>
+      <strong>Shipping Address:</strong> ${customer.address || 'Not provided'}</p>
+      <h3>Items</h3>
+      <ul>${itemsListHtml}</ul>
+      <p><strong>Subtotal:</strong> KSh ${(total - shippingCost).toLocaleString()}<br/>
+      <strong>Shipping:</strong> KSh ${shippingCost.toLocaleString()}<br/>
+      <strong>Total:</strong> KSh ${total.toLocaleString()}</p>
+      <p>💳 Payment: M‑Pesa PayBill 303030, Account <strong>2035157150</strong></p>
+      <p><a href="${process.env.ADMIN_URL || 'https://cesa-admin.up.railway.app'}/orders">Click here to mark as paid</a></p>
+    `,
+  };
+
+  try {
+    await transporter.sendMail(mailOptions);
+    console.log(`📧 Admin notification sent for order ${order.order_number}`);
+  } catch (err) {
+    console.error('Failed to send admin email:', err);
+  }
+}
+
+// ========== HEALTH CHECK ==========
 app.get('/api/health', async (req, res) => {
   try {
     const result = await pool.query('SELECT NOW()');
@@ -92,8 +147,6 @@ app.get('/api/health', async (req, res) => {
 });
 
 // ========== PUBLIC ENDPOINTS ==========
-
-// Get all categories
 app.get('/api/categories', async (req, res) => {
   try {
     const result = await pool.query(`
@@ -119,7 +172,6 @@ app.get('/api/categories', async (req, res) => {
   }
 });
 
-// Get all collections
 app.get('/api/collections', async (req, res) => {
   try {
     const result = await pool.query(`
@@ -136,7 +188,6 @@ app.get('/api/collections', async (req, res) => {
   }
 });
 
-// Get products by category/collection
 app.get('/api/products', async (req, res) => {
   const { category, collection } = req.query;
   try {
@@ -172,7 +223,6 @@ app.get('/api/products', async (req, res) => {
   }
 });
 
-// Get single product by ID (includes current stock)
 app.get('/api/products/:id', async (req, res) => {
   try {
     const result = await pool.query(
@@ -190,22 +240,14 @@ app.get('/api/products/:id', async (req, res) => {
   }
 });
 
-// ✅ FIX: Public stock update endpoint (PATCH /api/products/:id/stock)
-// Called by the frontend after order placement for standalone stock adjustments.
-// NOTE: Stock is already atomically deducted inside POST /api/orders.
-// Only call this endpoint for cases NOT covered by a full order (e.g. cart reservations,
-// manual corrections). The checkout flow should NOT call this separately.
 app.patch('/api/products/:id/stock', async (req, res) => {
   const { quantityChange, reason = 'sale' } = req.body;
-
   if (quantityChange === undefined || typeof quantityChange !== 'number') {
     return res.status(400).json({ error: 'quantityChange must be a number' });
   }
-
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-
     const updateResult = await client.query(
       `UPDATE products
        SET stock_quantity = GREATEST(0, stock_quantity + $1),
@@ -214,27 +256,17 @@ app.patch('/api/products/:id/stock', async (req, res) => {
        RETURNING id, name, stock_quantity`,
       [quantityChange, req.params.id]
     );
-
     if (updateResult.rows.length === 0) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Product not found' });
     }
-
     const newStock = updateResult.rows[0].stock_quantity;
-
     await client.query(
       `INSERT INTO inventory_transactions
          (product_id, transaction_type, quantity_change, new_quantity, notes)
        VALUES ($1, $2, $3, $4, $5)`,
-      [
-        req.params.id,
-        reason,
-        quantityChange,
-        newStock,
-        `Stock updated via API: ${quantityChange > 0 ? '+' : ''}${quantityChange} units (${reason})`
-      ]
+      [req.params.id, reason, quantityChange, newStock, `Stock updated via API: ${quantityChange > 0 ? '+' : ''}${quantityChange} units (${reason})`]
     );
-
     await client.query('COMMIT');
     res.json({ success: true, product: updateResult.rows[0] });
   } catch (err) {
@@ -246,13 +278,9 @@ app.patch('/api/products/:id/stock', async (req, res) => {
   }
 });
 
-// Get specific category with all its data
 app.get('/api/categories/:slug', async (req, res) => {
   try {
-    const categoryResult = await pool.query(
-      'SELECT * FROM categories WHERE slug = $1',
-      [req.params.slug]
-    );
+    const categoryResult = await pool.query('SELECT * FROM categories WHERE slug = $1', [req.params.slug]);
     if (categoryResult.rows.length === 0) {
       return res.status(404).json({ error: 'Category not found' });
     }
@@ -265,10 +293,7 @@ app.get('/api/categories/:slug', async (req, res) => {
        ORDER BY p.created_at DESC`,
       [category.id]
     );
-    const collectionsResult = await pool.query(
-      'SELECT * FROM collections WHERE category_id = $1 ORDER BY name',
-      [category.id]
-    );
+    const collectionsResult = await pool.query('SELECT * FROM collections WHERE category_id = $1 ORDER BY name', [category.id]);
     res.json({
       ...category,
       products: productsResult.rows,
@@ -280,7 +305,6 @@ app.get('/api/categories/:slug', async (req, res) => {
   }
 });
 
-// Search products
 app.get('/api/search', async (req, res) => {
   const { q } = req.query;
   if (!q) return res.json([]);
@@ -301,11 +325,8 @@ app.get('/api/search', async (req, res) => {
 });
 
 // ========== ORDER ENDPOINTS ==========
-
-// Create a new order (with atomic stock deduction — do NOT call PATCH /stock separately)
 app.post('/api/orders', async (req, res) => {
   const { items, customer, shipping, payment } = req.body;
-
   if (!items || !Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ error: 'Order must contain at least one item' });
   }
@@ -345,8 +366,7 @@ app.post('/api/orders', async (req, res) => {
       ]
     );
 
-    // ✅ Atomic stock deduction with safety check
-    // This is the ONLY place stock is deducted for orders — do not call PATCH /stock additionally
+    // Atomic stock deduction
     for (const item of items) {
       const updateResult = await client.query(
         `UPDATE products
@@ -356,28 +376,29 @@ app.post('/api/orders', async (req, res) => {
          RETURNING stock_quantity`,
         [item.quantity, item.product_id]
       );
-
       if (updateResult.rowCount === 0) {
         throw new Error(`Insufficient stock for product ID ${item.product_id}`);
       }
-
       const newStock = updateResult.rows[0].stock_quantity;
       await client.query(
         `INSERT INTO inventory_transactions
          (product_id, transaction_type, quantity_change, new_quantity, notes, order_id)
          VALUES ($1, $2, $3, $4, $5, $6)`,
-        [
-          item.product_id,
-          'order_placed',
-          -item.quantity,
-          newStock,
-          `Sold ${item.quantity} units via order ${orderNumber}`,
-          result.rows[0].id
-        ]
+        [item.product_id, 'order_placed', -item.quantity, newStock, `Sold ${item.quantity} units via order ${orderNumber}`, result.rows[0].id]
       );
     }
 
     await client.query('COMMIT');
+
+    // Send admin notification (fire and forget)
+    const customerInfo = {
+      name: customer?.name || 'Guest',
+      email: customer?.email || '',
+      phone: customer?.phone || '',
+      address: shipping?.address?.fullAddress || '',
+    };
+    sendAdminOrderNotification(result.rows[0], customerInfo, items, total, shippingCost).catch(console.error);
+
     res.json({
       success: true,
       order: result.rows[0],
@@ -392,7 +413,6 @@ app.post('/api/orders', async (req, res) => {
   }
 });
 
-// Get order by order number (public tracking)
 app.get('/api/orders/:id', async (req, res) => {
   try {
     const result = await pool.query(
@@ -413,7 +433,6 @@ app.get('/api/orders/:id', async (req, res) => {
 });
 
 // ========== ADMIN MIDDLEWARE ==========
-
 const adminOnly = (req, res, next) => {
   const origin = req.headers.origin;
   const adminOrigins = [
@@ -432,8 +451,6 @@ const adminOnly = (req, res, next) => {
 };
 
 // ========== ADMIN ORDER ENDPOINTS ==========
-
-// Get all orders (admin only)
 app.get('/api/admin/orders', adminOnly, async (req, res) => {
   const { status, email, startDate, endDate, page = 1, limit = 20 } = req.query;
   try {
@@ -462,7 +479,6 @@ app.get('/api/admin/orders', adminOnly, async (req, res) => {
   }
 });
 
-// Update order status (admin only)
 app.patch('/api/admin/orders/:id', adminOnly, async (req, res) => {
   const { order_status, payment_status, tracking_number, shipping_carrier, notes } = req.body;
   try {
@@ -498,7 +514,7 @@ app.patch('/api/admin/orders/:id', adminOnly, async (req, res) => {
   }
 });
 
-// ✅ NEW: Mark order as paid by order number (admin only)
+// ✅ Mark order as paid by order number (admin only)
 app.patch('/api/admin/orders/:orderNumber/mark-paid', adminOnly, async (req, res) => {
   const { orderNumber } = req.params;
   try {
@@ -520,7 +536,6 @@ app.patch('/api/admin/orders/:orderNumber/mark-paid', adminOnly, async (req, res
   }
 });
 
-// Get order status history (admin only)
 app.get('/api/admin/orders/:id/history', adminOnly, async (req, res) => {
   try {
     const result = await pool.query(
@@ -536,20 +551,15 @@ app.get('/api/admin/orders/:id/history', adminOnly, async (req, res) => {
   }
 });
 
-// Get customer orders by email (admin only)
 app.get('/api/admin/customers/:email/orders', adminOnly, async (req, res) => {
   try {
-    const result = await pool.query(
-      `SELECT * FROM orders WHERE customer_email ILIKE $1 ORDER BY created_at DESC`,
-      [req.params.email]
-    );
+    const result = await pool.query(`SELECT * FROM orders WHERE customer_email ILIKE $1 ORDER BY created_at DESC`, [req.params.email]);
     res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Get order statistics (admin only)
 app.get('/api/admin/orders/stats/dashboard', adminOnly, async (req, res) => {
   try {
     const [totalOrders, totalRevenue, pendingOrders, completedOrders, recentOrders, revenueByMonth] = await Promise.all([
@@ -581,9 +591,7 @@ app.get('/api/admin/orders/stats/dashboard', adminOnly, async (req, res) => {
   }
 });
 
-// ========== ADMIN INVENTORY ENDPOINTS ==========
-
-// Get all products with detailed inventory info (admin only)
+// ========== ADMIN INVENTORY ENDPOINTS (unchanged, kept for completeness) ==========
 app.get('/api/admin/inventory', adminOnly, async (req, res) => {
   try {
     const result = await pool.query(`
@@ -605,7 +613,6 @@ app.get('/api/admin/inventory', adminOnly, async (req, res) => {
   }
 });
 
-// Get inventory statistics (admin only)
 app.get('/api/admin/inventory/stats', adminOnly, async (req, res) => {
   try {
     const [totalProducts, lowStockProducts, outOfStockProducts, totalValue, recentTransactions, topSellingProducts] = await Promise.all([
@@ -641,7 +648,6 @@ app.get('/api/admin/inventory/stats', adminOnly, async (req, res) => {
   }
 });
 
-// Add new product (admin only)
 app.post('/api/admin/inventory/products', adminOnly, async (req, res) => {
   const { name, description, sku, price, category_id, collection_id, initial_stock, images, variants } = req.body;
   try {
@@ -667,7 +673,6 @@ app.post('/api/admin/inventory/products', adminOnly, async (req, res) => {
   }
 });
 
-// Update product details (admin only)
 app.put('/api/admin/inventory/products/:id', adminOnly, async (req, res) => {
   const { name, description, price, category_id, collection_id, images, variants } = req.body;
   try {
@@ -686,7 +691,6 @@ app.put('/api/admin/inventory/products/:id', adminOnly, async (req, res) => {
   }
 });
 
-// Bulk update stock (admin only)
 app.post('/api/admin/inventory/bulk-update', adminOnly, async (req, res) => {
   const { updates } = req.body;
   try {
@@ -715,7 +719,6 @@ app.post('/api/admin/inventory/bulk-update', adminOnly, async (req, res) => {
   }
 });
 
-// Delete product (admin only)
 app.delete('/api/admin/inventory/products/:id', adminOnly, async (req, res) => {
   const client = await pool.connect();
   try {
@@ -736,7 +739,6 @@ app.delete('/api/admin/inventory/products/:id', adminOnly, async (req, res) => {
   }
 });
 
-// Get inventory transactions (admin only)
 app.get('/api/admin/inventory/transactions', adminOnly, async (req, res) => {
   const { product_id, start_date, end_date, type, page = 1, limit = 50 } = req.query;
   try {
@@ -766,7 +768,6 @@ app.get('/api/admin/inventory/transactions', adminOnly, async (req, res) => {
   }
 });
 
-// Export inventory data (admin only)
 app.get('/api/admin/inventory/export', adminOnly, async (req, res) => {
   try {
     const result = await pool.query(`
@@ -794,7 +795,6 @@ app.get('/api/admin/inventory/export', adminOnly, async (req, res) => {
   }
 });
 
-// Get sales analytics (admin only)
 app.get('/api/admin/sales/analytics', adminOnly, async (req, res) => {
   const { period = 'month' } = req.query;
   let interval;
@@ -859,7 +859,6 @@ app.get('/api/admin/sales/analytics', adminOnly, async (req, res) => {
 });
 
 // ========== ERROR HANDLING ==========
-
 app.use((req, res) => {
   res.status(404).json({ error: 'Route not found', path: req.path, method: req.method });
 });
@@ -888,10 +887,8 @@ app.listen(PORT, '0.0.0.0', () => {
 │   • API: https://cesa-api.up.railway.app            
 │                                                     │
 │ 🌐 CORS Enabled for all required origins            
-│ 📦 Stock endpoints:                                 
-│   • PATCH /api/products/:id/stock  ✅ (NEW)         
-│   • Stock auto-deducted in POST /api/orders         
-│   • PATCH /api/admin/orders/:orderNumber/mark-paid ✅ (NEW)
+│ 📧 Admin email notifications: ENABLED               
+│ 📦 Atomic stock deduction: ACTIVE                   
 └─────────────────────────────────────────────────────┘
   `);
 });
