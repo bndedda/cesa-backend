@@ -125,6 +125,25 @@ Please check your M‑Pesa messages and mark as paid in the admin panel.
     console.error('Failed to send admin email:', err);
   }
 }
+// ========== TEST EMAIL ENDPOINT (remove after verification) ==========
+app.get('/api/test-email', async (req, res) => {
+  try {
+    // Ensure transporter is configured
+    if (!transporter) {
+      throw new Error('Email transporter not configured');
+    }
+    const info = await transporter.sendMail({
+      from: `"Cesa Test" <${process.env.SMTP_USER}>`,
+      to: process.env.ADMIN_EMAIL,
+      subject: 'Test email from Railway backend',
+      text: 'If you receive this, SMTP is working on Railway.',
+    });
+    res.json({ success: true, message: 'Test email sent', messageId: info.messageId });
+  } catch (err) {
+    console.error('Test email error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ========== HEALTH CHECK ==========
 app.get('/api/health', async (req, res) => {
