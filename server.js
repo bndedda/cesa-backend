@@ -809,7 +809,7 @@ app.get('/api/admin/inventory', adminOnly, async (req, res) => {
       LEFT JOIN collections col ON p.collection_id = col.id
       LEFT JOIN (
         SELECT
-          (item->>'product_id')::int                              AS product_id,
+          (item->>'product_id')::uuid                              AS product_id,
           COUNT(DISTINCT o.id)                                    AS total_orders,
           SUM((item->>'quantity')::int)                           AS units_sold,
           SUM((item->>'quantity')::int * (item->>'price')::numeric) AS revenue
@@ -818,8 +818,8 @@ app.get('/api/admin/inventory', adminOnly, async (req, res) => {
         WHERE o.payment_status = 'paid'
           AND o.items IS NOT NULL
           AND jsonb_typeof(o.items) = 'array'
-          AND (item->>'product_id') ~ '^[0-9]+$'
-        GROUP BY (item->>'product_id')::int
+          AND (item->>'product_id') ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        GROUP BY (item->>'product_id')::uuid
       ) sold ON p.id = sold.product_id
       ORDER BY p.created_at DESC
     `);
@@ -853,7 +853,7 @@ app.get('/api/admin/inventory/stats', adminOnly, async (req, res) => {
         JOIN categories c ON p.category_id = c.id
         LEFT JOIN (
           SELECT
-            (item->>'product_id')::int                              AS product_id,
+            (item->>'product_id')::uuid                              AS product_id,
             COUNT(DISTINCT o.id)                                    AS total_orders,
             SUM((item->>'quantity')::int)                           AS units_sold,
             SUM((item->>'quantity')::int * (item->>'price')::numeric) AS revenue
@@ -862,8 +862,8 @@ app.get('/api/admin/inventory/stats', adminOnly, async (req, res) => {
           WHERE o.payment_status = 'paid'
             AND o.items IS NOT NULL
             AND jsonb_typeof(o.items) = 'array'
-            AND (item->>'product_id') ~ '^[0-9]+$'
-          GROUP BY (item->>'product_id')::int
+            AND (item->>'product_id') ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+          GROUP BY (item->>'product_id')::uuid
         ) sold ON p.id = sold.product_id
         ORDER BY COALESCE(sold.units_sold, 0) DESC
         LIMIT 10
@@ -1017,7 +1017,7 @@ app.get('/api/admin/inventory/export', adminOnly, async (req, res) => {
       LEFT JOIN collections col ON p.collection_id = col.id
       LEFT JOIN (
         SELECT
-          (item->>'product_id')::int                              AS product_id,
+          (item->>'product_id')::uuid                              AS product_id,
           COUNT(DISTINCT o.id)                                    AS total_orders,
           SUM((item->>'quantity')::int)                           AS units_sold,
           SUM((item->>'quantity')::int * (item->>'price')::numeric) AS revenue
@@ -1026,8 +1026,8 @@ app.get('/api/admin/inventory/export', adminOnly, async (req, res) => {
         WHERE o.payment_status = 'paid'
           AND o.items IS NOT NULL
           AND jsonb_typeof(o.items) = 'array'
-          AND (item->>'product_id') ~ '^[0-9]+$'
-        GROUP BY (item->>'product_id')::int
+          AND (item->>'product_id') ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        GROUP BY (item->>'product_id')::uuid
       ) sold ON p.id = sold.product_id
       ORDER BY p.category_id, p.created_at DESC
     `);
@@ -1052,12 +1052,12 @@ app.get('/api/admin/sales/analytics', adminOnly, async (req, res) => {
   const interval = ['day','week','month','year'].includes(period) ? period : 'month';
 
   // Shared safe JSONB guard — only process rows where items is a non-null JSON array
-  // and product_id is a valid integer string. Prevents ALL cast errors.
+  // and product_id is a valid UUID string. products.id is UUID type — cast accordingly.
   const SAFE_WHERE = `
     o.payment_status = 'paid'
     AND o.items IS NOT NULL
     AND jsonb_typeof(o.items) = 'array'
-    AND (item->>'product_id') ~ '^[0-9]+$'
+    AND (item->>'product_id') ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
   `;
 
   try {
@@ -1093,7 +1093,7 @@ app.get('/api/admin/sales/analytics', adminOnly, async (req, res) => {
           SUM((item->>'quantity')::int * (item->>'price')::numeric) AS revenue
         FROM orders o
         CROSS JOIN LATERAL jsonb_array_elements(o.items) AS item
-        JOIN products p ON p.id = (item->>'product_id')::int
+        JOIN products p ON p.id = (item->>'product_id')::uuid
         JOIN categories c ON c.id = p.category_id
         WHERE ${SAFE_WHERE}
           AND o.created_at >= NOW() - INTERVAL '30 days'
@@ -1111,7 +1111,7 @@ app.get('/api/admin/sales/analytics', adminOnly, async (req, res) => {
           SUM((item->>'quantity')::int * (item->>'price')::numeric) AS revenue
         FROM orders o
         CROSS JOIN LATERAL jsonb_array_elements(o.items) AS item
-        JOIN products p ON p.id = (item->>'product_id')::int
+        JOIN products p ON p.id = (item->>'product_id')::uuid
         JOIN categories c ON c.id = p.category_id
         WHERE ${SAFE_WHERE}
         GROUP BY p.id, p.name, p.sku, c.name
