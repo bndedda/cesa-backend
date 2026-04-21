@@ -281,6 +281,22 @@ Shipping: KSh ${shippingCost.toLocaleString()}
   }
 }
 
+// ========== ADMIN AUTHENTICATION ==========
+// ✅ PATCH 1: Admin login endpoint (reads from env vars)
+app.post('/api/admin/auth/login', (req, res) => {
+  const { email, password } = req.body;
+  const validEmail    = process.env.ADMIN_EMAIL    || 'admin@cesadesigns.com';
+  const validPassword = process.env.ADMIN_PASSWORD || 'CesaAdmin2024!';
+
+  if (email === validEmail && password === validPassword) {
+    // Simple token – in production upgrade to JWT
+    const token = Buffer.from(`${email}:${Date.now()}`).toString('base64');
+    res.json({ success: true, token, email });
+  } else {
+    res.status(401).json({ success: false, error: 'Invalid credentials' });
+  }
+});
+
 // ========== TEST EMAIL ENDPOINT ==========
 app.get('/api/test-email', async (req, res) => {
   try {
@@ -390,8 +406,12 @@ app.get('/api/products/:id', async (req, res) => {
   }
 });
 
+// ✅ PATCH 4: Accept both quantityChange (API) and quantity_change (admin panel)
 app.patch('/api/products/:id/stock', async (req, res) => {
-  const { quantityChange, reason = 'sale' } = req.body;
+  const quantityChange = req.body.quantityChange ?? req.body.quantity_change;
+  const reason = req.body.reason || 'adjustment';
+  const notes  = req.body.notes  || '';
+
   if (quantityChange === undefined || typeof quantityChange !== 'number') {
     return res.status(400).json({ error: 'quantityChange must be a number' });
   }
@@ -411,7 +431,8 @@ app.patch('/api/products/:id/stock', async (req, res) => {
     await client.query(
       `INSERT INTO inventory_transactions (product_id, transaction_type, quantity_change, new_quantity, notes)
        VALUES ($1, $2, $3, $4, $5)`,
-      [req.params.id, reason, quantityChange, newStock, `Stock updated via API: ${quantityChange > 0 ? '+' : ''}${quantityChange} units (${reason})`]
+      [req.params.id, reason, quantityChange, newStock,
+       notes || `Stock updated: ${quantityChange > 0 ? '+' : ''}${quantityChange} units (${reason})`]
     );
     await client.query('COMMIT');
     res.json({ success: true, product: updateResult.rows[0] });
@@ -791,17 +812,34 @@ app.get('/api/admin/orders/stats/dashboard', adminOnly, async (req, res) => {
 });
 
 // ========== ADMIN INVENTORY ENDPOINTS ==========
+// ✅ PATCH 2: Fixed /api/admin/inventory (uses JSONB instead of order_items)
 app.get('/api/admin/inventory', adminOnly, async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT p.*, c.name as category_name, c.slug as category_slug, col.name as collection_name,
-             COUNT(o.id) as total_sold, COALESCE(SUM(oi.quantity), 0) as units_sold
+      SELECT
+        p.*,
+        c.name  AS category_name,
+        c.slug  AS category_slug,
+        col.name AS collection_name,
+        COALESCE(sold.units_sold,   0)                    AS units_sold,
+        COALESCE(sold.total_orders, 0)                    AS total_sold,
+        COALESCE(sold.revenue,      0)                    AS revenue
       FROM products p
       JOIN categories c ON p.category_id = c.id
       LEFT JOIN collections col ON p.collection_id = col.id
-      LEFT JOIN order_items oi ON p.id = oi.product_id
-      LEFT JOIN orders o ON oi.order_id = o.id AND o.order_status = 'completed'
-      GROUP BY p.id, c.name, c.slug, col.name
+      LEFT JOIN (
+        SELECT
+          (item->>'product_id')::int                         AS product_id,
+          COUNT(DISTINCT o.id)                               AS total_orders,
+          SUM((item->>'quantity')::int)                      AS units_sold,
+          SUM((item->>'quantity')::int * (item->>'price')::numeric) AS revenue
+        FROM orders o,
+          jsonb_array_elements(o.items) AS item
+        WHERE o.payment_status = 'paid'
+        GROUP BY (item->>'product_id')::int
+      ) sold ON p.id = sold.product_id
+      GROUP BY p.id, c.name, c.slug, col.name,
+               sold.units_sold, sold.total_orders, sold.revenue
       ORDER BY p.created_at DESC
     `);
     res.json(result.rows);
@@ -810,6 +848,7 @@ app.get('/api/admin/inventory', adminOnly, async (req, res) => {
   }
 });
 
+// ✅ PATCH 3: Fixed /api/admin/inventory/stats (uses JSONB unnesting)
 app.get('/api/admin/inventory/stats', adminOnly, async (req, res) => {
   try {
     const [totalProducts, lowStock, outOfStock, totalValue, recentTx, topSelling] = await Promise.all([
@@ -817,26 +856,42 @@ app.get('/api/admin/inventory/stats', adminOnly, async (req, res) => {
       pool.query('SELECT COUNT(*) as count FROM products WHERE stock_quantity BETWEEN 1 AND 10'),
       pool.query('SELECT COUNT(*) as count FROM products WHERE stock_quantity = 0'),
       pool.query('SELECT COALESCE(SUM(price * stock_quantity), 0) as value FROM products'),
-      pool.query('SELECT * FROM inventory_transactions ORDER BY created_at DESC LIMIT 10'),
       pool.query(`
-        SELECT p.id, p.name, p.sku, c.name as category,
-               COUNT(oi.id) as total_orders, COALESCE(SUM(oi.quantity), 0) as units_sold
+        SELECT t.*, p.name as product_name
+        FROM inventory_transactions t
+        JOIN products p ON t.product_id = p.id
+        ORDER BY t.created_at DESC LIMIT 20
+      `),
+      pool.query(`
+        SELECT
+          p.id, p.name, p.sku, c.name AS category,
+          COALESCE(sold.total_orders, 0) AS total_orders,
+          COALESCE(sold.units_sold,   0) AS units_sold,
+          COALESCE(sold.revenue,      0) AS revenue
         FROM products p
-        LEFT JOIN order_items oi ON p.id = oi.product_id
-        LEFT JOIN orders o ON oi.order_id = o.id
         JOIN categories c ON p.category_id = c.id
-        WHERE o.order_status = 'completed' OR o.id IS NULL
-        GROUP BY p.id, p.name, p.sku, c.name
-        ORDER BY units_sold DESC LIMIT 10
+        LEFT JOIN (
+          SELECT
+            (item->>'product_id')::int                         AS product_id,
+            COUNT(DISTINCT o.id)                               AS total_orders,
+            SUM((item->>'quantity')::int)                      AS units_sold,
+            SUM((item->>'quantity')::int * (item->>'price')::numeric) AS revenue
+          FROM orders o,
+            jsonb_array_elements(o.items) AS item
+          WHERE o.payment_status = 'paid'
+          GROUP BY (item->>'product_id')::int
+        ) sold ON p.id = sold.product_id
+        ORDER BY COALESCE(sold.units_sold, 0) DESC
+        LIMIT 10
       `)
     ]);
     res.json({
-      total_products: parseInt(totalProducts.rows[0].count),
-      low_stock: parseInt(lowStock.rows[0].count),
-      out_of_stock: parseInt(outOfStock.rows[0].count),
-      inventory_value: parseFloat(totalValue.rows[0].value),
+      total_products:      parseInt(totalProducts.rows[0].count),
+      low_stock:           parseInt(lowStock.rows[0].count),
+      out_of_stock:        parseInt(outOfStock.rows[0].count),
+      inventory_value:     parseFloat(totalValue.rows[0].value),
       recent_transactions: recentTx.rows,
-      top_selling: topSelling.rows
+      top_selling:         topSelling.rows
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1091,6 +1146,8 @@ app.listen(PORT, '0.0.0.0', () => {
 │  ✅ Admin orders fixed (payment_status filter)       │
 │  ✅ Customer confirmation email on mark-paid         │
 │  ✅ Customer data saved to DB                        │
+│  ✅ Admin auth using env vars                        │
+│  ✅ Inventory stats using JSONB (no order_items)     │
 │  📱 Telegram: ${process.env.TELEGRAM_BOT_TOKEN ? 'Configured' : 'Not configured (optional)'}
 └──────────────────────────────────────────────────────┘
   `);
