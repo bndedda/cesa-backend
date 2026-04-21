@@ -1,11 +1,11 @@
 const express = require('express');
 const { Pool } = require('pg');
 const cors = require('cors');
-const nodemailer = require('nodemailer');
-const dns = require('dns');
-// ✅ Must be called BEFORE dotenv and any network code
-dns.setDefaultResultOrder('ipv4first');
+const { Resend } = require('resend');
 require('dotenv').config();
+
+// ✅ Resend uses HTTPS (port 443) — never blocked by Railway
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 const app = express();
 
@@ -59,37 +59,12 @@ const pool = new Pool({
 });
 
 // ========== EMAIL NOTIFICATION SETUP ==========
-// Railway blocks IPv6 outbound. We bypass DNS entirely by using Gmail's
-// stable IPv4 address directly, and set servername for TLS SNI validation.
-const transporter = nodemailer.createTransport({
-  host: '74.125.133.108',    // ✅ Gmail SMTP IPv4 address — bypasses IPv6 DNS on Railway
-  port: 587,
-  secure: false,
-  requireTLS: true,
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-  tls: {
-    rejectUnauthorized: false,
-    servername: 'smtp.gmail.com', // ✅ Required for TLS SNI when using IP directly
-  },
-});
-
-// Verify transporter on startup
-transporter.verify((error) => {
-  if (error) {
-    console.error('❌ SMTP connection failed:', error.message);
-    console.error('   Check SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS in Railway env vars.');
-  } else {
-    console.log('✅ SMTP transporter ready – emails will send.');
-  }
-});
+// Resend sends over HTTPS — no SMTP ports needed, works on all Railway plans
+console.log(process.env.RESEND_API_KEY ? '✅ Resend API key found' : '❌ RESEND_API_KEY missing');
 
 // ── Admin order notification email ─────────────────────────────────────────
 async function sendAdminOrderNotification(order, customer, items, total, shippingCost) {
   const adminEmail = process.env.ADMIN_EMAIL || 'cesafabrics@gmail.com';
-  if (!adminEmail) return;
 
   const itemsHtml = items.map(i =>
     `<tr>
@@ -103,8 +78,8 @@ async function sendAdminOrderNotification(order, customer, items, total, shippin
 
   const adminUrl = process.env.ADMIN_URL || 'https://cesa-admin.up.railway.app';
 
-  await transporter.sendMail({
-    from: `"Cesa Designs Shop" <${process.env.SMTP_USER}>`,
+  await resend.emails.send({
+    from: process.env.RESEND_FROM || 'Cesa Designs Shop <onboarding@resend.dev>',
     to: adminEmail,
     subject: `🛍️ New Order #${order.order_number} – KSh ${total.toLocaleString()} (Pending Payment)`,
     text: `
@@ -151,9 +126,9 @@ Mark as paid → ${adminUrl}/orders
               <th style="padding:8px 10px;text-align:left;color:#6b7280;font-weight:600">Item</th>
               <th style="padding:8px 10px;text-align:center;color:#6b7280;font-weight:600">Qty</th>
               <th style="padding:8px 10px;text-align:right;color:#6b7280;font-weight:600">Total</th>
-             </tr></thead>
+            </tr></thead>
             <tbody>${itemsHtml}</tbody>
-           </table>
+          </table>
 
           <div style="margin-top:16px;padding:16px;background:#f9fafb;border-radius:6px">
             <div style="display:flex;justify-content:space-between"><span>Subtotal</span><span>KSh ${(total - shippingCost).toLocaleString()}</span></div>
@@ -177,7 +152,7 @@ Mark as paid → ${adminUrl}/orders
       </div>
     `,
   });
-  console.log(`📧 Admin email sent for order ${order.order_number}`);
+  console.log(`📧 Admin notification sent via Resend for order ${order.order_number}`);
 }
 
 // ── Customer confirmation email (sent when admin marks as paid) ─────────────
@@ -198,8 +173,8 @@ async function sendCustomerConfirmationEmail(order) {
 
   const shopUrl = process.env.SHOP_URL || 'https://cesa-shop.up.railway.app';
 
-  await transporter.sendMail({
-    from: `"Cesa Designs" <${process.env.SMTP_USER}>`,
+  await resend.emails.send({
+    from: process.env.RESEND_FROM || 'Cesa Designs <onboarding@resend.dev>',
     to: order.customer_email,
     subject: `✅ Payment Confirmed – Order #${order.order_number} is Being Processed!`,
     text: `
@@ -239,9 +214,9 @@ Visit us again: ${shopUrl}
               <th style="padding:8px 10px;text-align:left;color:#6b7280">Item</th>
               <th style="padding:8px 10px;text-align:center;color:#6b7280">Qty</th>
               <th style="padding:8px 10px;text-align:right;color:#6b7280">Total</th>
-             </tr></thead>
+            </tr></thead>
             <tbody>${itemsHtml}</tbody>
-           </table>
+          </table>
 
           <p style="margin-top:20px;color:#6b7280;font-size:14px">
             We'll send you another message with tracking details once your order ships. 
@@ -261,7 +236,7 @@ Visit us again: ${shopUrl}
       </div>
     `,
   });
-  console.log(`📧 Customer confirmation email sent to ${order.customer_email} for order ${order.order_number}`);
+  console.log(`📧 Customer confirmation sent via Resend to ${order.customer_email} for order ${order.order_number}`);
 }
 
 // ── Telegram fallback notification ─────────────────────────────────────────
@@ -309,16 +284,17 @@ Shipping: KSh ${shippingCost.toLocaleString()}
 // ========== TEST EMAIL ENDPOINT ==========
 app.get('/api/test-email', async (req, res) => {
   try {
-    const info = await transporter.sendMail({
-      from: `"Cesa Test" <${process.env.SMTP_USER}>`,
-      to: process.env.ADMIN_EMAIL,
-      subject: 'Test email – SMTP working ✅',
-      text: `SMTP is working.\nHost: ${process.env.SMTP_HOST}\nPort: ${process.env.SMTP_PORT}\nUser: ${process.env.SMTP_USER}`,
+    const { data, error } = await resend.emails.send({
+      from: process.env.RESEND_FROM || 'Cesa Designs <onboarding@resend.dev>',
+      to: process.env.ADMIN_EMAIL || 'cesafabrics@gmail.com',
+      subject: 'Test email – Resend working',
+      text: 'Resend is working. Email delivery confirmed for Cesa Designs Shop.',
     });
-    res.json({ success: true, messageId: info.messageId, accepted: info.accepted });
+    if (error) throw new Error(error.message);
+    res.json({ success: true, id: data?.id });
   } catch (err) {
     console.error('Test email error:', err);
-    res.status(500).json({ error: err.message, code: err.code });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -1111,11 +1087,10 @@ app.listen(PORT, '0.0.0.0', () => {
 │  Env:  ${process.env.NODE_ENV || 'development'}
 │  DB:   ${process.env.DATABASE_URL ? '✅ Railway PostgreSQL' : '⚠️  No DATABASE_URL'}
 │                                                      │
-│  ✅ SMTP port 587 STARTTLS (Railway-compatible)      │
+│  ✅ Resend email API (HTTPS) – works on Railway      │
 │  ✅ Admin orders fixed (payment_status filter)       │
 │  ✅ Customer confirmation email on mark-paid         │
 │  ✅ Customer data saved to DB                        │
-│  ✅ IPv4 forced (DNS setDefaultResultOrder)          │
 │  📱 Telegram: ${process.env.TELEGRAM_BOT_TOKEN ? 'Configured' : 'Not configured (optional)'}
 └──────────────────────────────────────────────────────┘
   `);
