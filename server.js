@@ -997,22 +997,37 @@ app.get('/api/admin/inventory/transactions', adminOnly, async (req, res) => {
 
 app.get('/api/admin/inventory/export', adminOnly, async (req, res) => {
   try {
+    // ✅ Uses JSONB unnesting — no order_items table required
     const result = await pool.query(`
-      SELECT p.sku, p.name, c.name as category, col.name as collection,
-             p.price, p.stock_quantity, p.created_at, p.updated_at,
-             COUNT(DISTINCT o.id) as total_orders,
-             COALESCE(SUM(oi.quantity), 0) as units_sold,
-             COALESCE(SUM(oi.quantity * oi.price), 0) as revenue
+      SELECT
+        p.sku, p.name, c.name as category, col.name as collection,
+        p.price, p.stock_quantity, p.created_at, p.updated_at,
+        COALESCE(sold.total_orders, 0) as total_orders,
+        COALESCE(sold.units_sold, 0)   as units_sold,
+        COALESCE(sold.revenue, 0)      as revenue
       FROM products p
       JOIN categories c ON p.category_id = c.id
       LEFT JOIN collections col ON p.collection_id = col.id
-      LEFT JOIN order_items oi ON p.id = oi.product_id
-      LEFT JOIN orders o ON oi.order_id = o.id
-      GROUP BY p.id, p.sku, p.name, c.name, col.name, p.price, p.stock_quantity, p.created_at, p.updated_at
+      LEFT JOIN (
+        SELECT
+          (item->>'product_id')::int               AS product_id,
+          COUNT(DISTINCT o.id)                      AS total_orders,
+          SUM((item->>'quantity')::int)             AS units_sold,
+          SUM((item->>'quantity')::int * (item->>'price')::numeric) AS revenue
+        FROM orders o,
+          jsonb_array_elements(o.items) AS item
+        WHERE o.payment_status = 'paid'
+        GROUP BY (item->>'product_id')::int
+      ) sold ON p.id = sold.product_id
       ORDER BY p.category_id, p.created_at DESC
     `);
+    if (result.rows.length === 0) return res.json([]);
     const headers = Object.keys(result.rows[0]).join(',');
-    const csv = result.rows.map(row => Object.values(row).map(val => typeof val === 'string' && val.includes(',') ? `"${val}"` : val).join(',')).join('\n');
+    const csv = result.rows.map(row =>
+      Object.values(row).map(val =>
+        typeof val === 'string' && val.includes(',') ? `"${val}"` : val
+      ).join(',')
+    ).join('\n');
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename=inventory-export.csv');
     res.send(headers + '\n' + csv);
@@ -1025,32 +1040,69 @@ app.get('/api/admin/sales/analytics', adminOnly, async (req, res) => {
   const { period = 'month' } = req.query;
   const interval = ['day','week','month','year'].includes(period) ? period : 'month';
   try {
+    // ✅ ALL three queries use JSONB unnesting — no order_items table needed.
+    // Root cause of "0 sold" bug: previous code joined order_items which was never populated.
+    // Orders store items as JSONB in orders.items — we unnest with jsonb_array_elements().
     const [salesResult, categorySales, topProducts] = await Promise.all([
+
+      // Sales trend over time
       pool.query(`
-        SELECT DATE_TRUNC('${interval}', o.created_at) as period,
-               COUNT(DISTINCT o.id) as order_count, COUNT(DISTINCT o.customer_email) as customer_count,
-               SUM(o.total) as revenue, AVG(o.total) as avg_order_value, SUM(oi.quantity) as units_sold
-        FROM orders o JOIN order_items oi ON o.id = oi.order_id
-        WHERE o.order_status = 'completed' AND o.created_at >= NOW() - INTERVAL '6 months'
-        GROUP BY DATE_TRUNC('${interval}', o.created_at) ORDER BY period DESC
+        SELECT
+          DATE_TRUNC('${interval}', o.created_at)   AS period,
+          COUNT(DISTINCT o.id)                        AS order_count,
+          COUNT(DISTINCT o.customer_email)            AS customer_count,
+          SUM(o.total)                                AS revenue,
+          AVG(o.total)                                AS avg_order_value,
+          SUM((item->>'quantity')::int)               AS units_sold
+        FROM orders o,
+          jsonb_array_elements(o.items) AS item
+        WHERE o.payment_status = 'paid'
+          AND o.created_at >= NOW() - INTERVAL '6 months'
+        GROUP BY DATE_TRUNC('${interval}', o.created_at)
+        ORDER BY period DESC
       `),
+
+      // Revenue by category
       pool.query(`
-        SELECT c.name as category, COUNT(DISTINCT o.id) as order_count,
-               SUM(oi.quantity) as units_sold, SUM(oi.quantity * oi.price) as revenue
-        FROM categories c JOIN products p ON c.id = p.category_id
-        JOIN order_items oi ON p.id = oi.product_id JOIN orders o ON oi.order_id = o.id
-        WHERE o.order_status = 'completed' AND o.created_at >= NOW() - INTERVAL '30 days'
-        GROUP BY c.id, c.name ORDER BY revenue DESC
+        SELECT
+          c.name                                           AS category,
+          COUNT(DISTINCT o.id)                             AS order_count,
+          SUM((item->>'quantity')::int)                    AS units_sold,
+          SUM((item->>'quantity')::int * (item->>'price')::numeric) AS revenue
+        FROM orders o,
+          jsonb_array_elements(o.items) AS item
+        JOIN products p ON p.id = (item->>'product_id')::int
+        JOIN categories c ON c.id = p.category_id
+        WHERE o.payment_status = 'paid'
+          AND o.created_at >= NOW() - INTERVAL '30 days'
+        GROUP BY c.id, c.name
+        ORDER BY revenue DESC
       `),
+
+      // Top selling products
       pool.query(`
-        SELECT p.name, p.sku, c.name as category, SUM(oi.quantity) as units_sold, SUM(oi.quantity * oi.price) as revenue
-        FROM products p JOIN categories c ON p.category_id = c.id
-        JOIN order_items oi ON p.id = oi.product_id JOIN orders o ON oi.order_id = o.id
-        WHERE o.order_status = 'completed' AND o.created_at >= NOW() - INTERVAL '30 days'
-        GROUP BY p.id, p.name, p.sku, c.name ORDER BY units_sold DESC LIMIT 10
+        SELECT
+          p.name,
+          p.sku,
+          c.name                                           AS category,
+          SUM((item->>'quantity')::int)                    AS units_sold,
+          SUM((item->>'quantity')::int * (item->>'price')::numeric) AS revenue
+        FROM orders o,
+          jsonb_array_elements(o.items) AS item
+        JOIN products p ON p.id = (item->>'product_id')::int
+        JOIN categories c ON c.id = p.category_id
+        WHERE o.payment_status = 'paid'
+        GROUP BY p.id, p.name, p.sku, c.name
+        ORDER BY units_sold DESC
+        LIMIT 10
       `)
     ]);
-    res.json({ sales_trend: salesResult.rows, category_performance: categorySales.rows, top_products: topProducts.rows });
+
+    res.json({
+      sales_trend:          salesResult.rows,
+      category_performance: categorySales.rows,
+      top_products:         topProducts.rows
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
