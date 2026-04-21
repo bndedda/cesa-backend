@@ -281,22 +281,6 @@ Shipping: KSh ${shippingCost.toLocaleString()}
   }
 }
 
-// ========== ADMIN AUTHENTICATION ==========
-// ✅ PATCH 1: Admin login endpoint (reads from env vars)
-app.post('/api/admin/auth/login', (req, res) => {
-  const { email, password } = req.body;
-  const validEmail    = process.env.ADMIN_EMAIL    || 'admin@cesadesigns.com';
-  const validPassword = process.env.ADMIN_PASSWORD || 'CesaAdmin2024!';
-
-  if (email === validEmail && password === validPassword) {
-    // Simple token – in production upgrade to JWT
-    const token = Buffer.from(`${email}:${Date.now()}`).toString('base64');
-    res.json({ success: true, token, email });
-  } else {
-    res.status(401).json({ success: false, error: 'Invalid credentials' });
-  }
-});
-
 // ========== TEST EMAIL ENDPOINT ==========
 app.get('/api/test-email', async (req, res) => {
   try {
@@ -406,13 +390,11 @@ app.get('/api/products/:id', async (req, res) => {
   }
 });
 
-// ✅ PATCH 4: Accept both quantityChange (API) and quantity_change (admin panel)
 app.patch('/api/products/:id/stock', async (req, res) => {
+  // Accept both camelCase (API clients) and snake_case (admin panel)
   const quantityChange = req.body.quantityChange ?? req.body.quantity_change;
   const reason = req.body.reason || 'adjustment';
-  const notes  = req.body.notes  || '';
-
-  if (quantityChange === undefined || typeof quantityChange !== 'number') {
+  if (quantityChange === undefined || quantityChange === null || typeof quantityChange !== 'number') {
     return res.status(400).json({ error: 'quantityChange must be a number' });
   }
   const client = await pool.connect();
@@ -431,8 +413,7 @@ app.patch('/api/products/:id/stock', async (req, res) => {
     await client.query(
       `INSERT INTO inventory_transactions (product_id, transaction_type, quantity_change, new_quantity, notes)
        VALUES ($1, $2, $3, $4, $5)`,
-      [req.params.id, reason, quantityChange, newStock,
-       notes || `Stock updated: ${quantityChange > 0 ? '+' : ''}${quantityChange} units (${reason})`]
+      [req.params.id, reason, quantityChange, newStock, `Stock updated via API: ${quantityChange > 0 ? '+' : ''}${quantityChange} units (${reason})`]
     );
     await client.query('COMMIT');
     res.json({ success: true, product: updateResult.rows[0] });
@@ -812,7 +793,6 @@ app.get('/api/admin/orders/stats/dashboard', adminOnly, async (req, res) => {
 });
 
 // ========== ADMIN INVENTORY ENDPOINTS ==========
-// ✅ PATCH 2: Fixed /api/admin/inventory (uses JSONB instead of order_items)
 app.get('/api/admin/inventory', adminOnly, async (req, res) => {
   try {
     const result = await pool.query(`
@@ -821,34 +801,35 @@ app.get('/api/admin/inventory', adminOnly, async (req, res) => {
         c.name  AS category_name,
         c.slug  AS category_slug,
         col.name AS collection_name,
-        COALESCE(sold.units_sold,   0)                    AS units_sold,
-        COALESCE(sold.total_orders, 0)                    AS total_sold,
-        COALESCE(sold.revenue,      0)                    AS revenue
+        COALESCE(sold.units_sold,   0) AS units_sold,
+        COALESCE(sold.total_orders, 0) AS total_sold,
+        COALESCE(sold.revenue,      0) AS revenue
       FROM products p
       JOIN categories c ON p.category_id = c.id
       LEFT JOIN collections col ON p.collection_id = col.id
       LEFT JOIN (
         SELECT
-          (item->>'product_id')::int                         AS product_id,
-          COUNT(DISTINCT o.id)                               AS total_orders,
-          SUM((item->>'quantity')::int)                      AS units_sold,
+          (item->>'product_id')::int                              AS product_id,
+          COUNT(DISTINCT o.id)                                    AS total_orders,
+          SUM((item->>'quantity')::int)                           AS units_sold,
           SUM((item->>'quantity')::int * (item->>'price')::numeric) AS revenue
-        FROM orders o,
-          jsonb_array_elements(o.items) AS item
+        FROM orders o
+        CROSS JOIN LATERAL jsonb_array_elements(o.items) AS item
         WHERE o.payment_status = 'paid'
+          AND o.items IS NOT NULL
+          AND jsonb_typeof(o.items) = 'array'
+          AND (item->>'product_id') ~ '^[0-9]+$'
         GROUP BY (item->>'product_id')::int
       ) sold ON p.id = sold.product_id
-      GROUP BY p.id, c.name, c.slug, col.name,
-               sold.units_sold, sold.total_orders, sold.revenue
       ORDER BY p.created_at DESC
     `);
     res.json(result.rows);
   } catch (err) {
+    console.error('Inventory fetch error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// ✅ PATCH 3: Fixed /api/admin/inventory/stats (uses JSONB unnesting)
 app.get('/api/admin/inventory/stats', adminOnly, async (req, res) => {
   try {
     const [totalProducts, lowStock, outOfStock, totalValue, recentTx, topSelling] = await Promise.all([
@@ -872,13 +853,16 @@ app.get('/api/admin/inventory/stats', adminOnly, async (req, res) => {
         JOIN categories c ON p.category_id = c.id
         LEFT JOIN (
           SELECT
-            (item->>'product_id')::int                         AS product_id,
-            COUNT(DISTINCT o.id)                               AS total_orders,
-            SUM((item->>'quantity')::int)                      AS units_sold,
+            (item->>'product_id')::int                              AS product_id,
+            COUNT(DISTINCT o.id)                                    AS total_orders,
+            SUM((item->>'quantity')::int)                           AS units_sold,
             SUM((item->>'quantity')::int * (item->>'price')::numeric) AS revenue
-          FROM orders o,
-            jsonb_array_elements(o.items) AS item
+          FROM orders o
+          CROSS JOIN LATERAL jsonb_array_elements(o.items) AS item
           WHERE o.payment_status = 'paid'
+            AND o.items IS NOT NULL
+            AND jsonb_typeof(o.items) = 'array'
+            AND (item->>'product_id') ~ '^[0-9]+$'
           GROUP BY (item->>'product_id')::int
         ) sold ON p.id = sold.product_id
         ORDER BY COALESCE(sold.units_sold, 0) DESC
@@ -894,6 +878,7 @@ app.get('/api/admin/inventory/stats', adminOnly, async (req, res) => {
       top_selling:         topSelling.rows
     });
   } catch (err) {
+    console.error('Inventory stats error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -1025,20 +1010,23 @@ app.get('/api/admin/inventory/export', adminOnly, async (req, res) => {
         p.sku, p.name, c.name as category, col.name as collection,
         p.price, p.stock_quantity, p.created_at, p.updated_at,
         COALESCE(sold.total_orders, 0) as total_orders,
-        COALESCE(sold.units_sold, 0)   as units_sold,
-        COALESCE(sold.revenue, 0)      as revenue
+        COALESCE(sold.units_sold,   0) as units_sold,
+        COALESCE(sold.revenue,      0) as revenue
       FROM products p
       JOIN categories c ON p.category_id = c.id
       LEFT JOIN collections col ON p.collection_id = col.id
       LEFT JOIN (
         SELECT
-          (item->>'product_id')::int               AS product_id,
-          COUNT(DISTINCT o.id)                      AS total_orders,
-          SUM((item->>'quantity')::int)             AS units_sold,
+          (item->>'product_id')::int                              AS product_id,
+          COUNT(DISTINCT o.id)                                    AS total_orders,
+          SUM((item->>'quantity')::int)                           AS units_sold,
           SUM((item->>'quantity')::int * (item->>'price')::numeric) AS revenue
-        FROM orders o,
-          jsonb_array_elements(o.items) AS item
+        FROM orders o
+        CROSS JOIN LATERAL jsonb_array_elements(o.items) AS item
         WHERE o.payment_status = 'paid'
+          AND o.items IS NOT NULL
+          AND jsonb_typeof(o.items) = 'array'
+          AND (item->>'product_id') ~ '^[0-9]+$'
         GROUP BY (item->>'product_id')::int
       ) sold ON p.id = sold.product_id
       ORDER BY p.category_id, p.created_at DESC
@@ -1054,6 +1042,7 @@ app.get('/api/admin/inventory/export', adminOnly, async (req, res) => {
     res.setHeader('Content-Disposition', 'attachment; filename=inventory-export.csv');
     res.send(headers + '\n' + csv);
   } catch (err) {
+    console.error('Export error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -1061,50 +1050,70 @@ app.get('/api/admin/inventory/export', adminOnly, async (req, res) => {
 app.get('/api/admin/sales/analytics', adminOnly, async (req, res) => {
   const { period = 'month' } = req.query;
   const interval = ['day','week','month','year'].includes(period) ? period : 'month';
+
+  // Shared safe JSONB guard — only process rows where items is a non-null JSON array
+  // and product_id is a valid integer string. Prevents ALL cast errors.
+  const SAFE_WHERE = `
+    o.payment_status = 'paid'
+    AND o.items IS NOT NULL
+    AND jsonb_typeof(o.items) = 'array'
+    AND (item->>'product_id') ~ '^[0-9]+$'
+  `;
+
   try {
     const [salesResult, categorySales, topProducts] = await Promise.all([
+
+      // Sales trend — uses order-level totals (no item unnesting needed)
       pool.query(`
         SELECT
-          DATE_TRUNC('${interval}', o.created_at)   AS period,
-          COUNT(DISTINCT o.id)                        AS order_count,
-          COUNT(DISTINCT o.customer_email)            AS customer_count,
-          SUM(o.total)                                AS revenue,
-          AVG(o.total)                                AS avg_order_value,
-          SUM((item->>'quantity')::int)               AS units_sold
-        FROM orders o,
-          jsonb_array_elements(o.items) AS item
+          DATE_TRUNC('${interval}', o.created_at)  AS period,
+          COUNT(DISTINCT o.id)                       AS order_count,
+          COUNT(DISTINCT o.customer_email)           AS customer_count,
+          COALESCE(SUM(o.total), 0)                  AS revenue,
+          COALESCE(AVG(o.total), 0)                  AS avg_order_value,
+          COALESCE(SUM(item_counts.qty), 0)          AS units_sold
+        FROM orders o
+        LEFT JOIN LATERAL (
+          SELECT SUM((item->>'quantity')::int) AS qty
+          FROM jsonb_array_elements(o.items) AS item
+          WHERE (item->>'quantity') ~ '^[0-9]+$'
+        ) item_counts ON o.items IS NOT NULL AND jsonb_typeof(o.items) = 'array'
         WHERE o.payment_status = 'paid'
           AND o.created_at >= NOW() - INTERVAL '6 months'
         GROUP BY DATE_TRUNC('${interval}', o.created_at)
         ORDER BY period DESC
       `),
+
+      // Revenue by category
       pool.query(`
         SELECT
-          c.name                                           AS category,
-          COUNT(DISTINCT o.id)                             AS order_count,
-          SUM((item->>'quantity')::int)                    AS units_sold,
+          c.name                                              AS category,
+          COUNT(DISTINCT o.id)                               AS order_count,
+          SUM((item->>'quantity')::int)                      AS units_sold,
           SUM((item->>'quantity')::int * (item->>'price')::numeric) AS revenue
-        FROM orders o,
-          jsonb_array_elements(o.items) AS item
+        FROM orders o
+        CROSS JOIN LATERAL jsonb_array_elements(o.items) AS item
         JOIN products p ON p.id = (item->>'product_id')::int
         JOIN categories c ON c.id = p.category_id
-        WHERE o.payment_status = 'paid'
+        WHERE ${SAFE_WHERE}
           AND o.created_at >= NOW() - INTERVAL '30 days'
         GROUP BY c.id, c.name
         ORDER BY revenue DESC
       `),
+
+      // Top selling products
       pool.query(`
         SELECT
           p.name,
           p.sku,
-          c.name                                           AS category,
-          SUM((item->>'quantity')::int)                    AS units_sold,
+          c.name                                              AS category,
+          SUM((item->>'quantity')::int)                      AS units_sold,
           SUM((item->>'quantity')::int * (item->>'price')::numeric) AS revenue
-        FROM orders o,
-          jsonb_array_elements(o.items) AS item
+        FROM orders o
+        CROSS JOIN LATERAL jsonb_array_elements(o.items) AS item
         JOIN products p ON p.id = (item->>'product_id')::int
         JOIN categories c ON c.id = p.category_id
-        WHERE o.payment_status = 'paid'
+        WHERE ${SAFE_WHERE}
         GROUP BY p.id, p.name, p.sku, c.name
         ORDER BY units_sold DESC
         LIMIT 10
@@ -1117,6 +1126,7 @@ app.get('/api/admin/sales/analytics', adminOnly, async (req, res) => {
       top_products:         topProducts.rows
     });
   } catch (err) {
+    console.error('Analytics error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -1146,8 +1156,6 @@ app.listen(PORT, '0.0.0.0', () => {
 │  ✅ Admin orders fixed (payment_status filter)       │
 │  ✅ Customer confirmation email on mark-paid         │
 │  ✅ Customer data saved to DB                        │
-│  ✅ Admin auth using env vars                        │
-│  ✅ Inventory stats using JSONB (no order_items)     │
 │  📱 Telegram: ${process.env.TELEGRAM_BOT_TOKEN ? 'Configured' : 'Not configured (optional)'}
 └──────────────────────────────────────────────────────┘
   `);
