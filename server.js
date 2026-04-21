@@ -2,6 +2,8 @@ const express = require('express');
 const { Pool } = require('pg');
 const cors = require('cors');
 const nodemailer = require('nodemailer');
+const dns = require('dns');
+dns.setDefaultResultOrder('ipv4first'); // ✅ Force IPv4 — Railway blocks IPv6 outbound to Gmail SMTP
 require('dotenv').config();
 
 const app = express();
@@ -67,7 +69,6 @@ const transporter = nodemailer.createTransport({
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
   },
-  socket: { family: 4 },  // ✅ forces IPv4 — correct placement for nodemailer
   tls: {
     rejectUnauthorized: false,
   },
