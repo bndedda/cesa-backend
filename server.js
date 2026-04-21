@@ -2,9 +2,11 @@ const express = require('express');
 const { Pool } = require('pg');
 const cors = require('cors');
 const nodemailer = require('nodemailer');
-const dns = require('dns');
-dns.setDefaultResultOrder('ipv4first'); // ✅ Force IPv4 — Railway blocks IPv6 outbound to Gmail SMTP
 require('dotenv').config();
+
+// ✅ Force IPv4 to avoid Railway connection issues with Gmail SMTP
+const dns = require('dns');
+dns.setDefaultResultOrder('ipv4first');
 
 const app = express();
 
@@ -58,8 +60,7 @@ const pool = new Pool({
 });
 
 // ========== EMAIL NOTIFICATION SETUP ==========
-// ✅ BUG FIX #1: Use port 587 + secure:false (STARTTLS) instead of port 465 (SSL).
-// Railway blocks outbound port 465. Port 587 with STARTTLS is fully supported.
+// Using STARTTLS on port 587 with IPv4 forced by DNS setting above
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST || 'smtp.gmail.com',
   port: parseInt(process.env.SMTP_PORT) || 587,
@@ -74,7 +75,7 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-// Verify transporter on startup so you see errors in Railway logs immediately
+// Verify transporter on startup
 transporter.verify((error) => {
   if (error) {
     console.error('❌ SMTP connection failed:', error.message);
@@ -94,7 +95,7 @@ async function sendAdminOrderNotification(order, customer, items, total, shippin
       <td style="padding:6px 10px;border-bottom:1px solid #eee">${i.name}</td>
       <td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:center">${i.quantity}</td>
       <td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:right">KSh ${(i.price * i.quantity).toLocaleString()}</td>
-    </tr>`
+     </tr>`
   ).join('');
 
   const itemsText = items.map(i => `  • ${i.name} x${i.quantity}  → KSh ${(i.price * i.quantity).toLocaleString()}`).join('\n');
@@ -149,9 +150,9 @@ Mark as paid → ${adminUrl}/orders
               <th style="padding:8px 10px;text-align:left;color:#6b7280;font-weight:600">Item</th>
               <th style="padding:8px 10px;text-align:center;color:#6b7280;font-weight:600">Qty</th>
               <th style="padding:8px 10px;text-align:right;color:#6b7280;font-weight:600">Total</th>
-            </tr></thead>
+             </tr></thead>
             <tbody>${itemsHtml}</tbody>
-          </table>
+           </table>
 
           <div style="margin-top:16px;padding:16px;background:#f9fafb;border-radius:6px">
             <div style="display:flex;justify-content:space-between"><span>Subtotal</span><span>KSh ${(total - shippingCost).toLocaleString()}</span></div>
@@ -179,7 +180,6 @@ Mark as paid → ${adminUrl}/orders
 }
 
 // ── Customer confirmation email (sent when admin marks as paid) ─────────────
-// ✅ BUG FIX #3 – This function was missing entirely.
 async function sendCustomerConfirmationEmail(order) {
   if (!order.customer_email) {
     console.log('⚠️ No customer email – skipping confirmation.');
@@ -192,7 +192,7 @@ async function sendCustomerConfirmationEmail(order) {
       <td style="padding:6px 10px;border-bottom:1px solid #eee">${i.name}</td>
       <td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:center">${i.quantity}</td>
       <td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:right">KSh ${(i.price * i.quantity).toLocaleString()}</td>
-    </tr>`
+     </tr>`
   ).join('');
 
   const shopUrl = process.env.SHOP_URL || 'https://cesa-shop.up.railway.app';
@@ -238,9 +238,9 @@ Visit us again: ${shopUrl}
               <th style="padding:8px 10px;text-align:left;color:#6b7280">Item</th>
               <th style="padding:8px 10px;text-align:center;color:#6b7280">Qty</th>
               <th style="padding:8px 10px;text-align:right;color:#6b7280">Total</th>
-            </tr></thead>
+             </tr></thead>
             <tbody>${itemsHtml}</tbody>
-          </table>
+           </table>
 
           <p style="margin-top:20px;color:#6b7280;font-size:14px">
             We'll send you another message with tracking details once your order ships. 
@@ -482,7 +482,6 @@ app.get('/api/search', async (req, res) => {
 });
 
 // ========== CUSTOMER ENDPOINTS ==========
-// ✅ BUG FIX #5 – Save/retrieve customer records so repeat buyers are recognised
 app.post('/api/customers', async (req, res) => {
   const { name, email, phone, address } = req.body;
   if (!email) return res.status(400).json({ error: 'Email is required' });
@@ -498,7 +497,6 @@ app.post('/api/customers', async (req, res) => {
     );
     res.json({ success: true, customer: result.rows[0] });
   } catch (err) {
-    // If customers table doesn't exist yet, just return OK so checkout isn't blocked
     console.error('Customer upsert error:', err.message);
     res.json({ success: true, message: 'Customer data noted (table may not exist yet)' });
   }
@@ -654,13 +652,7 @@ app.get('/api/admin/orders', adminOnly, async (req, res) => {
     const params = [];
     let paramCount = 1;
 
-    // ✅ BUG FIX #2 – The old code filtered order_status=pending but orders are
-    // created with order_status='processing'. Pending orders have payment_status='pending'.
-    // Now: ?status=pending  → filters payment_status='pending'
-    //      ?payment_status=X → explicit payment_status filter
-    //      ?status=X         → order_status filter (for processing/completed/cancelled)
     if (status === 'pending') {
-      // AdminOrders.jsx sends ?status=pending to mean "unpaid" – map to payment_status
       query += ` AND o.payment_status = $${paramCount}`; params.push('pending'); paramCount++;
     } else if (status) {
       query += ` AND o.order_status = $${paramCount}`; params.push(status); paramCount++;
@@ -724,7 +716,6 @@ app.patch('/api/admin/orders/:id', adminOnly, async (req, res) => {
   }
 });
 
-// ✅ BUG FIX #3 – mark-paid now sends customer confirmation email
 app.patch('/api/admin/orders/:orderNumber/mark-paid', adminOnly, async (req, res) => {
   const { orderNumber } = req.params;
   try {
@@ -743,14 +734,12 @@ app.patch('/api/admin/orders/:orderNumber/mark-paid', adminOnly, async (req, res
 
     const order = result.rows[0];
 
-    // Log status history
     await pool.query(
       `INSERT INTO order_status_history (order_id, order_status, payment_status, notes)
        VALUES ($1, $2, $3, $4)`,
       [order.id, 'processing', 'paid', 'Payment confirmed by admin – customer notified']
     ).catch(e => console.log('History insert skipped:', e.message));
 
-    // Send customer confirmation email (fire and forget)
     sendCustomerConfirmationEmail(order).catch(console.error);
 
     res.json({ success: true, order, message: 'Order marked as paid – customer email sent' });
@@ -999,7 +988,6 @@ app.get('/api/admin/inventory/transactions', adminOnly, async (req, res) => {
 
 app.get('/api/admin/inventory/export', adminOnly, async (req, res) => {
   try {
-    // ✅ Uses JSONB unnesting — no order_items table required
     const result = await pool.query(`
       SELECT
         p.sku, p.name, c.name as category, col.name as collection,
@@ -1042,12 +1030,7 @@ app.get('/api/admin/sales/analytics', adminOnly, async (req, res) => {
   const { period = 'month' } = req.query;
   const interval = ['day','week','month','year'].includes(period) ? period : 'month';
   try {
-    // ✅ ALL three queries use JSONB unnesting — no order_items table needed.
-    // Root cause of "0 sold" bug: previous code joined order_items which was never populated.
-    // Orders store items as JSONB in orders.items — we unnest with jsonb_array_elements().
     const [salesResult, categorySales, topProducts] = await Promise.all([
-
-      // Sales trend over time
       pool.query(`
         SELECT
           DATE_TRUNC('${interval}', o.created_at)   AS period,
@@ -1063,8 +1046,6 @@ app.get('/api/admin/sales/analytics', adminOnly, async (req, res) => {
         GROUP BY DATE_TRUNC('${interval}', o.created_at)
         ORDER BY period DESC
       `),
-
-      // Revenue by category
       pool.query(`
         SELECT
           c.name                                           AS category,
@@ -1080,8 +1061,6 @@ app.get('/api/admin/sales/analytics', adminOnly, async (req, res) => {
         GROUP BY c.id, c.name
         ORDER BY revenue DESC
       `),
-
-      // Top selling products
       pool.query(`
         SELECT
           p.name,
@@ -1135,6 +1114,7 @@ app.listen(PORT, '0.0.0.0', () => {
 │  ✅ Admin orders fixed (payment_status filter)       │
 │  ✅ Customer confirmation email on mark-paid         │
 │  ✅ Customer data saved to DB                        │
+│  ✅ IPv4 forced (DNS setDefaultResultOrder)          │
 │  📱 Telegram: ${process.env.TELEGRAM_BOT_TOKEN ? 'Configured' : 'Not configured (optional)'}
 └──────────────────────────────────────────────────────┘
   `);
