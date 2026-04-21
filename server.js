@@ -84,7 +84,7 @@ transporter.verify((error) => {
 
 // ── Admin order notification email ─────────────────────────────────────────
 async function sendAdminOrderNotification(order, customer, items, total, shippingCost) {
-  const adminEmail = process.env.ADMIN_EMAIL || 'cecafabrics@gmail.com';
+  const adminEmail = process.env.ADMIN_EMAIL || 'cesafabrics@gmail.com';
   if (!adminEmail) return;
 
   const itemsHtml = items.map(i =>
