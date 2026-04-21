@@ -2,11 +2,10 @@ const express = require('express');
 const { Pool } = require('pg');
 const cors = require('cors');
 const nodemailer = require('nodemailer');
-require('dotenv').config();
-
-// ✅ Force IPv4 to avoid Railway connection issues with Gmail SMTP
 const dns = require('dns');
+// ✅ Must be called BEFORE dotenv and any network code
 dns.setDefaultResultOrder('ipv4first');
+require('dotenv').config();
 
 const app = express();
 
@@ -60,10 +59,11 @@ const pool = new Pool({
 });
 
 // ========== EMAIL NOTIFICATION SETUP ==========
-// Using STARTTLS on port 587 with IPv4 forced by DNS setting above
+// Uses smtp4.gmail.com — a Gmail hostname that only has IPv4 A records,
+// bypassing Railway's IPv6-only DNS resolution for smtp.gmail.com
 const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST || 'smtp.gmail.com',
-  port: parseInt(process.env.SMTP_PORT) || 587,
+  host: 'smtp4.gmail.com',   // ✅ IPv4-only Gmail hostname — fixes ENETUNREACH on Railway
+  port: 587,
   secure: false,
   requireTLS: true,
   auth: {
