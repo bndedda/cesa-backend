@@ -63,6 +63,7 @@ const transporter = nodemailer.createTransport({
   port: parseInt(process.env.SMTP_PORT) || 587,   // ← reads from .env (587)
   secure: false,                                    // ← STARTTLS, NOT SSL
   requireTLS: true,                                 // ← force upgrade to TLS
+  family: 4,                                        // ← force IPv4 (Railway doesn't support IPv6)
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
