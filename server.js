@@ -60,16 +60,16 @@ const pool = new Pool({
 // Railway blocks outbound port 465. Port 587 with STARTTLS is fully supported.
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST || 'smtp.gmail.com',
-  port: parseInt(process.env.SMTP_PORT) || 587,   // ← reads from .env (587)
-  secure: false,                                    // ← STARTTLS, NOT SSL
-  requireTLS: true,                                 // ← force upgrade to TLS
-  family: 4,                                        // ← force IPv4 (Railway doesn't support IPv6)
+  port: parseInt(process.env.SMTP_PORT) || 587,
+  secure: false,
+  requireTLS: true,
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
   },
+  socket: { family: 4 },  // ✅ forces IPv4 — correct placement for nodemailer
   tls: {
-    rejectUnauthorized: false,                      // needed on Railway
+    rejectUnauthorized: false,
   },
 });
 
