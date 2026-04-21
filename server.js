@@ -59,10 +59,10 @@ const pool = new Pool({
 });
 
 // ========== EMAIL NOTIFICATION SETUP ==========
-// Uses smtp4.gmail.com — a Gmail hostname that only has IPv4 A records,
-// bypassing Railway's IPv6-only DNS resolution for smtp.gmail.com
+// Railway blocks IPv6 outbound. We bypass DNS entirely by using Gmail's
+// stable IPv4 address directly, and set servername for TLS SNI validation.
 const transporter = nodemailer.createTransport({
-  host: 'smtp4.gmail.com',   // ✅ IPv4-only Gmail hostname — fixes ENETUNREACH on Railway
+  host: '74.125.133.108',    // ✅ Gmail SMTP IPv4 address — bypasses IPv6 DNS on Railway
   port: 587,
   secure: false,
   requireTLS: true,
@@ -72,6 +72,7 @@ const transporter = nodemailer.createTransport({
   },
   tls: {
     rejectUnauthorized: false,
+    servername: 'smtp.gmail.com', // ✅ Required for TLS SNI when using IP directly
   },
 });
 
