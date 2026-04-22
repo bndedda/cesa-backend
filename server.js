@@ -339,6 +339,74 @@ app.get('/api/health', async (req, res) => {
   }
 });
 
+// ========== CONTACT FORM ==========
+// Receives messages from the footer contact form and emails them to cesadesigns@gmail.com
+app.post('/api/contact', async (req, res) => {
+  const { name, email, phone, message } = req.body;
+  if (!name || !email || !message) {
+    return res.status(400).json({ error: 'Name, email and message are required' });
+  }
+
+  try {
+    await resend.emails.send({
+      from: process.env.RESEND_FROM || 'Cesa Designs Shop <onboarding@resend.dev>',
+      to: 'cesadesigns@gmail.com',
+      replyTo: email,
+      subject: `📩 Website Enquiry from ${name}`,
+      text: `
+New enquiry from the Cesa Designs website contact form.
+
+Name:    ${name}
+Email:   ${email}
+Phone:   ${phone || 'Not provided'}
+
+Message:
+${message}
+
+---
+Reply directly to this email to respond to ${name}.
+      `,
+      html: `
+        <div style="font-family:Arial,sans-serif;max-width:580px;margin:0 auto">
+          <div style="background:#3E2723;color:white;padding:20px 24px;border-radius:8px 8px 0 0">
+            <h2 style="margin:0;font-size:18px">📩 New Website Enquiry</h2>
+            <p style="margin:6px 0 0;opacity:0.7;font-size:13px">Via cesadesigns.com contact form</p>
+          </div>
+          <div style="background:#fff;border:1px solid #e5e7eb;padding:24px;border-radius:0 0 8px 8px">
+            <table style="width:100%;border-collapse:collapse;margin-bottom:20px">
+              <tr>
+                <td style="padding:6px 0;color:#6b7280;width:80px;font-size:13px">Name</td>
+                <td style="padding:6px 0;font-weight:600;font-size:13px">${name}</td>
+              </tr>
+              <tr>
+                <td style="padding:6px 0;color:#6b7280;font-size:13px">Email</td>
+                <td style="padding:6px 0;font-size:13px"><a href="mailto:${email}" style="color:#3E2723">${email}</a></td>
+              </tr>
+              <tr>
+                <td style="padding:6px 0;color:#6b7280;font-size:13px">Phone</td>
+                <td style="padding:6px 0;font-size:13px">${phone || '<em style="color:#9ca3af">Not provided</em>'}</td>
+              </tr>
+            </table>
+            <div style="background:#f9fafb;border-left:3px solid #D4AF37;padding:14px 16px;border-radius:0 6px 6px 0">
+              <p style="margin:0 0 6px;font-size:12px;font-weight:700;text-transform:uppercase;color:#6b7280;letter-spacing:0.5px">Message</p>
+              <p style="margin:0;font-size:14px;color:#374151;line-height:1.6;white-space:pre-wrap">${message}</p>
+            </div>
+            <p style="margin-top:20px;font-size:12px;color:#9ca3af">
+              Hit <strong>Reply</strong> to respond directly to ${name} at ${email}.
+            </p>
+          </div>
+        </div>
+      `,
+    });
+
+    console.log(`📩 Contact form email sent from ${email}`);
+    res.json({ success: true, message: 'Message received. We\'ll be in touch soon!' });
+  } catch (err) {
+    console.error('Contact form email failed:', err.message);
+    res.status(500).json({ error: 'Failed to send message. Please email us directly at cesadesigns@gmail.com' });
+  }
+});
+
 // ========== PUBLIC ENDPOINTS ==========
 app.get('/api/categories', async (req, res) => {
   try {
