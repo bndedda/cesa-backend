@@ -298,6 +298,27 @@ app.get('/api/test-email', async (req, res) => {
   }
 });
 
+// ========== ADMIN AUTH ==========
+// Credentials validated server-side — never exposed in frontend code
+// Set ADMIN_EMAIL and ADMIN_PASSWORD in Railway environment variables
+app.post('/api/admin/auth/login', (req, res) => {
+  const { email, password } = req.body;
+  const validEmail    = process.env.ADMIN_EMAIL    || 'admin@cesadesigns.com';
+  const validPassword = process.env.ADMIN_PASSWORD || 'CesaAdmin2024!';
+
+  if (!email || !password) {
+    return res.status(400).json({ success: false, error: 'Email and password required' });
+  }
+  if (email === validEmail && password === validPassword) {
+    const token = Buffer.from(`${email}:${Date.now()}`).toString('base64');
+    console.log(`✅ Admin login: ${email}`);
+    res.json({ success: true, token, email });
+  } else {
+    console.log(`❌ Failed admin login attempt for: ${email}`);
+    res.status(401).json({ success: false, error: 'Invalid email or password' });
+  }
+});
+
 // ========== HEALTH CHECK ==========
 app.get('/api/health', async (req, res) => {
   try {
