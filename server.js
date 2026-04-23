@@ -976,10 +976,25 @@ app.post('/api/admin/inventory/products', adminOnly, async (req, res) => {
   const { name, description, sku, price, category_id, collection_id, initial_stock, images, variants } = req.body;
   try {
     await pool.query('BEGIN');
+
+    // ✅ Auto-generate slug from name — required by products table NOT NULL constraint
+    const baseSlug = name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')   // replace non-alphanumeric with hyphens
+      .replace(/^-+|-+$/g, '');        // trim leading/trailing hyphens
+
+    // Ensure slug is unique by appending a short timestamp suffix if needed
+    const slugCheck = await pool.query(
+      'SELECT id FROM products WHERE slug = $1', [baseSlug]
+    );
+    const slug = slugCheck.rows.length > 0
+      ? `${baseSlug}-${Date.now().toString(36)}`
+      : baseSlug;
+
     const productResult = await pool.query(
-      `INSERT INTO products (name, description, sku, price, category_id, collection_id, stock_quantity, images, variants, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) RETURNING *`,
-      [name, description, sku, price, category_id, collection_id, initial_stock || 0, JSON.stringify(images || []), JSON.stringify(variants || [])]
+      `INSERT INTO products (name, slug, description, sku, price, category_id, collection_id, stock_quantity, images, variants, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) RETURNING *`,
+      [name, slug, description, sku, price, category_id, collection_id, initial_stock || 0, JSON.stringify(images || []), JSON.stringify(variants || [])]
     );
     if (initial_stock && initial_stock > 0) {
       await pool.query(
