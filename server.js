@@ -340,7 +340,7 @@ app.get('/api/health', async (req, res) => {
 });
 
 // ========== CONTACT FORM ==========
-// Receives messages from the footer contact form and emails them to cesadesigns@gmail.com
+// Receives messages from the footer contact form and emails them to cesafabrics@gmail.com
 app.post('/api/contact', async (req, res) => {
   const { name, email, phone, message } = req.body;
   if (!name || !email || !message) {
@@ -350,7 +350,7 @@ app.post('/api/contact', async (req, res) => {
   try {
     await resend.emails.send({
       from: process.env.RESEND_FROM || 'Cesa Designs Shop <onboarding@resend.dev>',
-      to: 'cesadesigns@gmail.com',
+      to: 'cesafabrics@gmail.com',
       replyTo: email,
       subject: `📩 Website Enquiry from ${name}`,
       text: `
@@ -403,7 +403,7 @@ Reply directly to this email to respond to ${name}.
     res.json({ success: true, message: 'Message received. We\'ll be in touch soon!' });
   } catch (err) {
     console.error('Contact form email failed:', err.message);
-    res.status(500).json({ error: 'Failed to send message. Please email us directly at cesadesigns@gmail.com' });
+    res.status(500).json({ error: 'Failed to send message. Please email us directly at cesafabrics@gmail.com' });
   }
 });
 
@@ -976,25 +976,10 @@ app.post('/api/admin/inventory/products', adminOnly, async (req, res) => {
   const { name, description, sku, price, category_id, collection_id, initial_stock, images, variants } = req.body;
   try {
     await pool.query('BEGIN');
-
-    // ✅ Auto-generate slug from name — required by products table NOT NULL constraint
-    const baseSlug = name
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')   // replace non-alphanumeric with hyphens
-      .replace(/^-+|-+$/g, '');        // trim leading/trailing hyphens
-
-    // Ensure slug is unique by appending a short timestamp suffix if needed
-    const slugCheck = await pool.query(
-      'SELECT id FROM products WHERE slug = $1', [baseSlug]
-    );
-    const slug = slugCheck.rows.length > 0
-      ? `${baseSlug}-${Date.now().toString(36)}`
-      : baseSlug;
-
     const productResult = await pool.query(
-      `INSERT INTO products (name, slug, description, sku, price, category_id, collection_id, stock_quantity, images, variants, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) RETURNING *`,
-      [name, slug, description, sku, price, category_id, collection_id, initial_stock || 0, JSON.stringify(images || []), JSON.stringify(variants || [])]
+      `INSERT INTO products (name, description, sku, price, category_id, collection_id, stock_quantity, images, variants, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) RETURNING *`,
+      [name, description, sku, price, category_id, collection_id, initial_stock || 0, JSON.stringify(images || []), JSON.stringify(variants || [])]
     );
     if (initial_stock && initial_stock > 0) {
       await pool.query(
