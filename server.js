@@ -451,7 +451,11 @@ app.get('/api/products', async (req, res) => {
       FROM products p
       JOIN categories c ON p.category_id = c.id
       LEFT JOIN collections col ON p.collection_id = col.id
-      WHERE p.stock_quantity > 0
+      WHERE (p.stock_quantity > 0
+         OR  (p.variants IS NOT NULL
+              AND p.variants::text NOT IN ('[]', 'null', '')
+              AND p.variants::text != 'null'
+              AND jsonb_array_length(p.variants::jsonb) > 0))
     `;
     const params = [];
     let paramCount = 1;
@@ -466,12 +470,41 @@ app.get('/api/products', async (req, res) => {
 });
 
 app.get('/api/products/:id', async (req, res) => {
+  const { id } = req.params;
   try {
-    const result = await pool.query(
-      `SELECT id, name, price, stock_quantity, description, images, variants, category_id, collection_id
-       FROM products WHERE id = $1`,
-      [req.params.id]
-    );
+    let result;
+
+    if (/^\d+$/.test(id)) {
+      // ── Numeric ID lookup (original behaviour) ──────────────────────────
+      result = await pool.query(
+        `SELECT id, name, price, stock_quantity, description, images, variants, category_id, collection_id
+         FROM products WHERE id = $1`,
+        [id]
+      );
+    } else {
+      // ── Slug lookup ──────────────────────────────────────────────────────
+      // 1. Try exact slug match first
+      result = await pool.query(
+        `SELECT id, name, price, stock_quantity, description, images, variants, category_id, collection_id
+         FROM products WHERE slug = $1`,
+        [id]
+      );
+
+      // 2. If not found, try finding a parent product whose slug is a prefix
+      //    of the requested slug. Handles variant slugs like:
+      //    "my-shirt-print-1" → parent slug "my-shirt-{hash}"
+      if (result.rows.length === 0) {
+        result = await pool.query(
+          `SELECT id, name, price, stock_quantity, description, images, variants, category_id, collection_id
+           FROM products
+           WHERE $1 LIKE slug || '%'
+           ORDER BY length(slug) DESC
+           LIMIT 1`,
+          [id]
+        );
+      }
+    }
+
     if (result.rows.length === 0) return res.status(404).json({ error: 'Product not found' });
     res.json(result.rows[0]);
   } catch (err) {
@@ -522,7 +555,12 @@ app.get('/api/categories/:slug', async (req, res) => {
     const productsResult = await pool.query(
       `SELECT p.*, col.name as collection_name FROM products p
        LEFT JOIN collections col ON p.collection_id = col.id
-       WHERE p.category_id = $1 AND p.stock_quantity > 0 ORDER BY p.created_at DESC`,
+       WHERE p.category_id = $1
+         AND (p.stock_quantity > 0
+              OR (p.variants IS NOT NULL
+                  AND p.variants::text NOT IN ('[]', 'null', '')
+                  AND jsonb_array_length(p.variants::jsonb) > 0))
+       ORDER BY p.created_at DESC`,
       [category.id]
     );
     const collectionsResult = await pool.query('SELECT * FROM collections WHERE category_id = $1 ORDER BY name', [category.id]);
@@ -997,17 +1035,28 @@ app.post('/api/admin/inventory/products', adminOnly, async (req, res) => {
     : `product-${Date.now().toString(36)}`;
 
   try {
+    // If variants are provided, use sum of their stocks as stock_quantity
+    // so the product is visible on the storefront (which filters stock_quantity > 0)
+    let effectiveStock = parseInt(initial_stock) || 0;
+    try {
+      const variantArr = typeof variants === 'string' ? JSON.parse(variants) : (Array.isArray(variants) ? variants : []);
+      if (variantArr.length > 0) {
+        const variantSum = variantArr.reduce((sum, v) => sum + (parseInt(v.stock) || 0), 0);
+        if (variantSum > 0) effectiveStock = variantSum;
+      }
+    } catch {}
+
     await pool.query('BEGIN');
     const productResult = await pool.query(
       `INSERT INTO products (name, description, sku, slug, price, category_id, collection_id, stock_quantity, images, variants, created_at, updated_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) RETURNING *`,
-      [name, description, sku, slug, price, category_id, collection_id, initial_stock || 0, normalizeJsonField(images), normalizeJsonField(variants)]
+      [name, description, sku, slug, price, category_id, collection_id, effectiveStock, normalizeJsonField(images), normalizeJsonField(variants)]
     );
-    if (initial_stock && initial_stock > 0) {
+    if (effectiveStock > 0) {
       await pool.query(
         `INSERT INTO inventory_transactions (product_id, transaction_type, quantity_change, new_quantity, notes)
          VALUES ($1,'initial_stock',$2,$3,$4)`,
-        [productResult.rows[0].id, initial_stock, initial_stock, `Initial stock: ${initial_stock} units`]
+        [productResult.rows[0].id, effectiveStock, effectiveStock, `Initial stock: ${effectiveStock} units`]
       );
     }
     await pool.query('COMMIT');
@@ -1021,15 +1070,33 @@ app.post('/api/admin/inventory/products', adminOnly, async (req, res) => {
 app.put('/api/admin/inventory/products/:id', adminOnly, async (req, res) => {
   const { name, description, price, category_id, collection_id, images, variants } = req.body;
   try {
+    // Recompute stock_quantity from variant stocks when variants are updated
+    let stockUpdate = '';
+    const params = [name, description, price, category_id, collection_id,
+                    images   ? normalizeJsonField(images)   : null,
+                    variants ? normalizeJsonField(variants) : null];
+
+    if (variants) {
+      try {
+        const variantArr = typeof variants === 'string' ? JSON.parse(variants) : (Array.isArray(variants) ? variants : []);
+        if (variantArr.length > 0) {
+          const variantSum = variantArr.reduce((sum, v) => sum + (parseInt(v.stock) || 0), 0);
+          if (variantSum > 0) {
+            stockUpdate = `, stock_quantity=$${params.length + 1}`;
+            params.push(variantSum);
+          }
+        }
+      } catch {}
+    }
+
+    params.push(req.params.id);
     const result = await pool.query(
       `UPDATE products SET name=COALESCE($1,name), description=COALESCE($2,description),
          price=COALESCE($3,price), category_id=COALESCE($4,category_id),
          collection_id=COALESCE($5,collection_id), images=COALESCE($6,images),
-         variants=COALESCE($7,variants), updated_at=CURRENT_TIMESTAMP
-       WHERE id=$8 RETURNING *`,
-      [name, description, price, category_id, collection_id,
-       images   ? normalizeJsonField(images)   : null,
-       variants ? normalizeJsonField(variants) : null, req.params.id]
+         variants=COALESCE($7,variants)${stockUpdate}, updated_at=CURRENT_TIMESTAMP
+       WHERE id=$${params.length} RETURNING *`,
+      params
     );
     if (result.rows.length === 0) return res.status(404).json({ error: 'Product not found' });
     res.json({ success: true, product: result.rows[0] });
