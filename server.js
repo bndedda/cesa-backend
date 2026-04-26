@@ -972,6 +972,17 @@ app.get('/api/admin/inventory/stats', adminOnly, async (req, res) => {
   }
 });
 
+// Helper: accepts a value that may already be a JSON string or a plain array/object.
+// Always returns a valid JSON string for storage in a jsonb/text column.
+const normalizeJsonField = (val, fallback = []) => {
+  if (val === undefined || val === null) return JSON.stringify(fallback);
+  if (typeof val === 'string') {
+    try { JSON.parse(val); return val; } // already valid JSON string — use as-is
+    catch { return JSON.stringify(fallback); }
+  }
+  return JSON.stringify(val);
+};
+
 app.post('/api/admin/inventory/products', adminOnly, async (req, res) => {
   const { name, description, sku, price, category_id, collection_id, initial_stock, images, variants } = req.body;
 
@@ -990,7 +1001,7 @@ app.post('/api/admin/inventory/products', adminOnly, async (req, res) => {
     const productResult = await pool.query(
       `INSERT INTO products (name, description, sku, slug, price, category_id, collection_id, stock_quantity, images, variants, created_at, updated_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) RETURNING *`,
-      [name, description, sku, slug, price, category_id, collection_id, initial_stock || 0, JSON.stringify(images || []), JSON.stringify(variants || [])]
+      [name, description, sku, slug, price, category_id, collection_id, initial_stock || 0, normalizeJsonField(images), normalizeJsonField(variants)]
     );
     if (initial_stock && initial_stock > 0) {
       await pool.query(
@@ -1017,7 +1028,8 @@ app.put('/api/admin/inventory/products/:id', adminOnly, async (req, res) => {
          variants=COALESCE($7,variants), updated_at=CURRENT_TIMESTAMP
        WHERE id=$8 RETURNING *`,
       [name, description, price, category_id, collection_id,
-       images ? JSON.stringify(images) : null, variants ? JSON.stringify(variants) : null, req.params.id]
+       images   ? normalizeJsonField(images)   : null,
+       variants ? normalizeJsonField(variants) : null, req.params.id]
     );
     if (result.rows.length === 0) return res.status(404).json({ error: 'Product not found' });
     res.json({ success: true, product: result.rows[0] });
