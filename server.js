@@ -471,34 +471,59 @@ app.get('/api/products', async (req, res) => {
 
 app.get('/api/products/:id', async (req, res) => {
   const { id } = req.params;
+
+  // Reject frontend-only IDs immediately — never hit the DB
+  if (/^na-/.test(id) || /-placeholder-/.test(id)) {
+    return res.status(404).json({ error: 'Local product — no DB record', local: true });
+  }
+
   try {
     let result;
+    const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-    if (/^\d+$/.test(id)) {
-      // ── Numeric ID lookup (original behaviour) ──────────────────────────
+    if (UUID_REGEX.test(id)) {
+      // UUID lookup
       result = await pool.query(
-        `SELECT id, name, price, stock_quantity, description, images, variants, category_id, collection_id
-         FROM products WHERE id = $1`,
+        `SELECT p.*, c.name as category_name, c.slug as category_slug,
+                col.name as collection_name, col.slug as collection_slug
+         FROM products p
+         JOIN categories c ON p.category_id = c.id
+         LEFT JOIN collections col ON p.collection_id = col.id
+         WHERE p.id = $1::uuid`,
+        [id]
+      );
+    } else if (/^\d+$/.test(id)) {
+      // Legacy numeric ID lookup
+      result = await pool.query(
+        `SELECT p.*, c.name as category_name, c.slug as category_slug,
+                col.name as collection_name, col.slug as collection_slug
+         FROM products p
+         JOIN categories c ON p.category_id = c.id
+         LEFT JOIN collections col ON p.collection_id = col.id
+         WHERE p.id = $1`,
         [id]
       );
     } else {
-      // ── Slug lookup ──────────────────────────────────────────────────────
-      // 1. Try exact slug match first
+      // Slug lookup
       result = await pool.query(
-        `SELECT id, name, price, stock_quantity, description, images, variants, category_id, collection_id
-         FROM products WHERE slug = $1`,
+        `SELECT p.*, c.name as category_name, c.slug as category_slug,
+                col.name as collection_name, col.slug as collection_slug
+         FROM products p
+         JOIN categories c ON p.category_id = c.id
+         LEFT JOIN collections col ON p.collection_id = col.id
+         WHERE p.slug = $1`,
         [id]
       );
-
-      // 2. If not found, try finding a parent product whose slug is a prefix
-      //    of the requested slug. Handles variant slugs like:
-      //    "my-shirt-print-1" → parent slug "my-shirt-{hash}"
+      // Fallback: variant slug prefix match
       if (result.rows.length === 0) {
         result = await pool.query(
-          `SELECT id, name, price, stock_quantity, description, images, variants, category_id, collection_id
-           FROM products
-           WHERE $1 LIKE slug || '%'
-           ORDER BY length(slug) DESC
+          `SELECT p.*, c.name as category_name, c.slug as category_slug,
+                  col.name as collection_name, col.slug as collection_slug
+           FROM products p
+           JOIN categories c ON p.category_id = c.id
+           LEFT JOIN collections col ON p.collection_id = col.id
+           WHERE $1 LIKE p.slug || '%'
+           ORDER BY length(p.slug) DESC
            LIMIT 1`,
           [id]
         );
@@ -508,24 +533,32 @@ app.get('/api/products/:id', async (req, res) => {
     if (result.rows.length === 0) return res.status(404).json({ error: 'Product not found' });
     res.json(result.rows[0]);
   } catch (err) {
+    console.error(`❌ /api/products/${id} error:`, err.message);
     res.status(500).json({ error: err.message });
   }
 });
-
 app.patch('/api/products/:id/stock', async (req, res) => {
-  // Accept both camelCase (API clients) and snake_case (admin panel)
   const quantityChange = req.body.quantityChange ?? req.body.quantity_change;
   const reason = req.body.reason || 'adjustment';
   if (quantityChange === undefined || quantityChange === null || typeof quantityChange !== 'number') {
     return res.status(400).json({ error: 'quantityChange must be a number' });
   }
+
+  const { id } = req.params;
+  if (/^na-/.test(id) || /-placeholder-/.test(id)) {
+    return res.status(404).json({ error: 'Local product — no DB record', local: true });
+  }
+
+  const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const idParam = UUID_REGEX.test(id) ? `$2::uuid` : `$2`;
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const updateResult = await client.query(
       `UPDATE products SET stock_quantity = GREATEST(0, stock_quantity + $1), updated_at = CURRENT_TIMESTAMP
-       WHERE id = $2 RETURNING id, name, stock_quantity`,
-      [quantityChange, req.params.id]
+       WHERE id = ${idParam} RETURNING id, name, stock_quantity`,
+      [quantityChange, id]
     );
     if (updateResult.rows.length === 0) {
       await client.query('ROLLBACK');
