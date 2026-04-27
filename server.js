@@ -1345,7 +1345,17 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, '0.0.0.0', () => {
+app.listen(PORT, '0.0.0.0', async () => {
+
+  // ── Run safe migrations on every startup ─────────────────────────────────
+  // ALTER TABLE ... ADD COLUMN IF NOT EXISTS is idempotent — safe to run repeatedly
+  try {
+    await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS image_url TEXT`);
+    console.log('✅ Migration: products.image_url column ready');
+  } catch (err) {
+    console.error('⚠️  Migration warning (image_url):', err.message);
+  }
+
   console.log(`
 ┌──────────────────────────────────────────────────────┐
 │       🚀 Cesa Designs API – All Bugs Fixed           │
