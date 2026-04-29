@@ -451,11 +451,7 @@ app.get('/api/products', async (req, res) => {
       FROM products p
       JOIN categories c ON p.category_id = c.id
       LEFT JOIN collections col ON p.collection_id = col.id
-      WHERE (p.stock_quantity > 0
-         OR  (p.variants IS NOT NULL
-              AND p.variants::text NOT IN ('[]', 'null', '')
-              AND p.variants::text != 'null'
-              AND jsonb_array_length(p.variants::jsonb) > 0))
+      WHERE 1=1
     `;
     const params = [];
     let paramCount = 1;
@@ -589,10 +585,6 @@ app.get('/api/categories/:slug', async (req, res) => {
       `SELECT p.*, col.name as collection_name FROM products p
        LEFT JOIN collections col ON p.collection_id = col.id
        WHERE p.category_id = $1
-         AND (p.stock_quantity > 0
-              OR (p.variants IS NOT NULL
-                  AND p.variants::text NOT IN ('[]', 'null', '')
-                  AND jsonb_array_length(p.variants::jsonb) > 0))
        ORDER BY p.created_at DESC`,
       [category.id]
     );
