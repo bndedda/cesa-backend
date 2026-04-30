@@ -1,6 +1,7 @@
 const express = require('express');
 const { Pool } = require('pg');
 const cors = require('cors');
+const bcrypt = require('bcrypt');
 const { Resend } = require('resend');
 require('dotenv').config();
 
@@ -299,23 +300,36 @@ app.get('/api/test-email', async (req, res) => {
 });
 
 // ========== ADMIN AUTH ==========
-// Credentials validated server-side — never exposed in frontend code
-// Set ADMIN_EMAIL and ADMIN_PASSWORD in Railway environment variables
-app.post('/api/admin/auth/login', (req, res) => {
+// Credentials validated server-side against the database using bcrypt
+app.post('/api/admin/auth/login', async (req, res) => {
   const { email, password } = req.body;
-  const validEmail    = process.env.ADMIN_EMAIL    || 'admin@cesadesigns.com';
-  const validPassword = process.env.ADMIN_PASSWORD || 'CesaAdmin2024!';
 
   if (!email || !password) {
     return res.status(400).json({ success: false, error: 'Email and password required' });
   }
-  if (email === validEmail && password === validPassword) {
-    const token = Buffer.from(`${email}:${Date.now()}`).toString('base64');
-    console.log(`✅ Admin login: ${email}`);
-    res.json({ success: true, token, email });
-  } else {
-    console.log(`❌ Failed admin login attempt for: ${email}`);
-    res.status(401).json({ success: false, error: 'Invalid email or password' });
+
+  try {
+    const result = await pool.query('SELECT * FROM admins WHERE email = $1', [email]);
+
+    if (result.rows.length === 0) {
+      console.log(`❌ Failed admin login attempt for: ${email}`);
+      return res.status(401).json({ success: false, error: 'Invalid email or password' });
+    }
+
+    const admin = result.rows[0];
+    const match = await bcrypt.compare(password, admin.password);
+
+    if (match) {
+      const token = Buffer.from(`${email}:${Date.now()}`).toString('base64');
+      console.log(`✅ Admin login: ${email}`);
+      res.json({ success: true, token, email });
+    } else {
+      console.log(`❌ Failed admin login attempt for: ${email}`);
+      res.status(401).json({ success: false, error: 'Invalid email or password' });
+    }
+  } catch (err) {
+    console.error('Login error:', err.message);
+    res.status(500).json({ success: false, error: 'Server error during login' });
   }
 });
 
@@ -398,12 +412,10 @@ Reply directly to this email to respond to ${name}.
         </div>
       `,
     });
-
-    console.log(`📩 Contact form email sent from ${email}`);
-    res.json({ success: true, message: 'Message received. We\'ll be in touch soon!' });
+    res.json({ success: true });
   } catch (err) {
-    console.error('Contact form email failed:', err.message);
-    res.status(500).json({ error: 'Failed to send message. Please email us directly at cesafabrics@gmail.com' });
+    console.error('Contact form error:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -478,7 +490,6 @@ app.get('/api/products/:id', async (req, res) => {
     const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
     if (UUID_REGEX.test(id)) {
-      // UUID lookup
       result = await pool.query(
         `SELECT p.*, c.name as category_name, c.slug as category_slug,
                 col.name as collection_name, col.slug as collection_slug
@@ -489,7 +500,6 @@ app.get('/api/products/:id', async (req, res) => {
         [id]
       );
     } else if (/^\d+$/.test(id)) {
-      // Legacy numeric ID lookup
       result = await pool.query(
         `SELECT p.*, c.name as category_name, c.slug as category_slug,
                 col.name as collection_name, col.slug as collection_slug
@@ -500,7 +510,6 @@ app.get('/api/products/:id', async (req, res) => {
         [id]
       );
     } else {
-      // Slug lookup
       result = await pool.query(
         `SELECT p.*, c.name as category_name, c.slug as category_slug,
                 col.name as collection_name, col.slug as collection_slug
@@ -510,7 +519,6 @@ app.get('/api/products/:id', async (req, res) => {
          WHERE p.slug = $1`,
         [id]
       );
-      // Fallback: variant slug prefix match
       if (result.rows.length === 0) {
         result = await pool.query(
           `SELECT p.*, c.name as category_name, c.slug as category_slug,
@@ -533,6 +541,7 @@ app.get('/api/products/:id', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 app.patch('/api/products/:id/stock', async (req, res) => {
   const quantityChange = req.body.quantityChange ?? req.body.quantity_change;
   const reason = req.body.reason || 'adjustment';
@@ -687,7 +696,6 @@ app.post('/api/orders', async (req, res) => {
       ]
     );
 
-    // Atomic stock deduction
     for (const item of items) {
       const updateResult = await client.query(
         `UPDATE products SET stock_quantity = stock_quantity - $1, updated_at = CURRENT_TIMESTAMP
@@ -705,7 +713,6 @@ app.post('/api/orders', async (req, res) => {
 
     await client.query('COMMIT');
 
-    // Also upsert customer record
     try {
       await pool.query(
         `INSERT INTO customers (name, email, phone, shipping_address, created_at, updated_at)
@@ -727,7 +734,6 @@ app.post('/api/orders', async (req, res) => {
         || 'Not provided',
     };
 
-    // Fire-and-forget notifications
     sendAdminOrderNotification(result.rows[0], customerInfo, items, total, shippingCost).catch(console.error);
     sendTelegramNotification(result.rows[0], customerInfo, items, total, shippingCost).catch(console.error);
 
@@ -1035,12 +1041,10 @@ app.get('/api/admin/inventory/stats', adminOnly, async (req, res) => {
   }
 });
 
-// Helper: accepts a value that may already be a JSON string or a plain array/object.
-// Always returns a valid JSON string for storage in a jsonb/text column.
 const normalizeJsonField = (val, fallback = []) => {
   if (val === undefined || val === null) return JSON.stringify(fallback);
   if (typeof val === 'string') {
-    try { JSON.parse(val); return val; } // already valid JSON string — use as-is
+    try { JSON.parse(val); return val; }
     catch { return JSON.stringify(fallback); }
   }
   return JSON.stringify(val);
@@ -1049,7 +1053,6 @@ const normalizeJsonField = (val, fallback = []) => {
 app.post('/api/admin/inventory/products', adminOnly, async (req, res) => {
   const { name, description, price, category_id, collection_id, initial_stock, image_url, images, variants } = req.body;
 
-  // Auto-generate slug from name + timestamp suffix (ensures uniqueness)
   const slug = name
     ? name.toLowerCase()
         .replace(/[^a-z0-9\s-]/g, '')
@@ -1060,7 +1063,6 @@ app.post('/api/admin/inventory/products', adminOnly, async (req, res) => {
     : `product-${Date.now().toString(36)}`;
 
   try {
-    // Auto-generate SKU: look up category slug, build CESA-{CAT}-{TIMESTAMP}
     let categorySlug = 'GEN';
     try {
       const catResult = await pool.query('SELECT slug FROM categories WHERE id = $1', [category_id]);
@@ -1070,7 +1072,6 @@ app.post('/api/admin/inventory/products', adminOnly, async (req, res) => {
     } catch {}
     const autoSku = `CESA-${categorySlug}-${Date.now().toString(36).toUpperCase()}`;
 
-    // If variants provided, use sum of their stocks
     let effectiveStock = parseInt(initial_stock) || 0;
     try {
       const variantArr = typeof variants === 'string' ? JSON.parse(variants) : (Array.isArray(variants) ? variants : []);
@@ -1080,7 +1081,6 @@ app.post('/api/admin/inventory/products', adminOnly, async (req, res) => {
       }
     } catch {}
 
-    // Build images array from image_url if provided
     let finalImages = normalizeJsonField(images);
     if (image_url && (!images || images === '[]')) {
       finalImages = JSON.stringify([image_url]);
@@ -1278,8 +1278,6 @@ app.get('/api/admin/sales/analytics', adminOnly, async (req, res) => {
   const { period = 'month' } = req.query;
   const interval = ['day','week','month','year'].includes(period) ? period : 'month';
 
-  // Shared safe JSONB guard — only process rows where items is a non-null JSON array
-  // and product_id is a valid UUID string. products.id is UUID type — cast accordingly.
   const SAFE_WHERE = `
     o.payment_status = 'paid'
     AND o.items IS NOT NULL
@@ -1289,8 +1287,6 @@ app.get('/api/admin/sales/analytics', adminOnly, async (req, res) => {
 
   try {
     const [salesResult, categorySales, topProducts] = await Promise.all([
-
-      // Sales trend — uses order-level totals (no item unnesting needed)
       pool.query(`
         SELECT
           DATE_TRUNC('${interval}', o.created_at)  AS period,
@@ -1310,8 +1306,6 @@ app.get('/api/admin/sales/analytics', adminOnly, async (req, res) => {
         GROUP BY DATE_TRUNC('${interval}', o.created_at)
         ORDER BY period DESC
       `),
-
-      // Revenue by category
       pool.query(`
         SELECT
           c.name                                              AS category,
@@ -1327,8 +1321,6 @@ app.get('/api/admin/sales/analytics', adminOnly, async (req, res) => {
         GROUP BY c.id, c.name
         ORDER BY revenue DESC
       `),
-
-      // Top selling products
       pool.query(`
         SELECT
           p.name,
@@ -1372,8 +1364,22 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, '0.0.0.0', async () => {
 
+  // ── Ensure admins table exists on every startup ───────────────────────────
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS admins (
+        id SERIAL PRIMARY KEY,
+        email VARCHAR(255) UNIQUE NOT NULL,
+        password VARCHAR(255) NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    console.log('✅ Migration: admins table ready');
+  } catch (err) {
+    console.error('⚠️  Migration warning (admins):', err.message);
+  }
+
   // ── Run safe migrations on every startup ─────────────────────────────────
-  // ALTER TABLE ... ADD COLUMN IF NOT EXISTS is idempotent — safe to run repeatedly
   try {
     await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS image_url TEXT`);
     console.log('✅ Migration: products.image_url column ready');
@@ -1390,6 +1396,7 @@ app.listen(PORT, '0.0.0.0', async () => {
 │  DB:   ${process.env.DATABASE_URL ? '✅ Railway PostgreSQL' : '⚠️  No DATABASE_URL'}
 │                                                      │
 │  ✅ Resend email API (HTTPS) – works on Railway      │
+│  ✅ Admin auth via database + bcrypt                 │
 │  ✅ Admin orders fixed (payment_status filter)       │
 │  ✅ Customer confirmation email on mark-paid         │
 │  ✅ Customer data saved to DB                        │
