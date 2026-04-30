@@ -8,6 +8,7 @@
     "build": "echo 'No build step required for Express API'"
   },
   "dependencies": {
+    "bcrypt": "^6.0.0",
     "cors": "^2.8.6",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
