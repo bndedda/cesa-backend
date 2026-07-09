@@ -1387,6 +1387,42 @@ app.listen(PORT, '0.0.0.0', async () => {
     console.error('⚠️  Migration warning (image_url):', err.message);
   }
 
+  // ── Seed: Unisex category + new collections (idempotent) ─────────────────
+  // The shop frontend filters by these slugs. Safe to run on every startup:
+  // each insert is guarded by WHERE NOT EXISTS, so nothing duplicates.
+  try {
+    await pool.query(`
+      INSERT INTO categories (name, slug, description, display_order)
+      SELECT 'Unisex', 'unisex', 'Global print fashion made for everyone',
+             COALESCE((SELECT MAX(display_order) FROM categories), 0) + 1
+      WHERE NOT EXISTS (SELECT 1 FROM categories WHERE slug = 'unisex')
+    `);
+
+    const seedCollections = [
+      // [category_slug, name, slug, description]
+      ['men',    'Plain Shirts',          'plain-shirts',           'Clean, solid-colour shirts for everyday versatility'],
+      ['men',    'Vest Coats',            'vest-coats',             'Tailored vest coats to layer over shirts'],
+      ['unisex', 'Unisex Tees',           'unisex-tees',            'Relaxed-fit tees sized for everyone'],
+      ['unisex', 'Hoodies & Sweatshirts', 'unisex-hoodies',         'Everyday layers in Ankara print panels'],
+      ['unisex', 'Kimonos & Dusters',     'unisex-kimonos-dusters', 'Open-front statement layers'],
+      ['unisex', 'Joggers',               'unisex-joggers',         'Comfortable, versatile joggers'],
+    ];
+
+    for (const [catSlug, name, slug, description] of seedCollections) {
+      await pool.query(`
+        INSERT INTO collections (category_id, name, slug, description)
+        SELECT c.id, $2, $3, $4
+        FROM categories c
+        WHERE c.slug = $1
+        AND NOT EXISTS (SELECT 1 FROM collections WHERE slug = $3)
+      `, [catSlug, name, slug, description]);
+    }
+
+    console.log('✅ Seed: unisex category + new collections ready');
+  } catch (err) {
+    console.error('⚠️  Seed warning (unisex/collections):', err.message);
+  }
+
   console.log(`
 ┌──────────────────────────────────────────────────────┐
 │       🚀 Cesa Designs API – All Bugs Fixed           │
