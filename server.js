@@ -1050,8 +1050,14 @@ const normalizeJsonField = (val, fallback = []) => {
   return JSON.stringify(val);
 };
 
+// Postgres rejects '' for a uuid column. Optional foreign keys arrive as
+// empty strings from <select> elements, so normalise them to null.
+const uuidOrNull = (v) => (v === '' || v === undefined ? null : v);
+
 app.post('/api/admin/inventory/products', adminOnly, async (req, res) => {
-  const { name, description, price, category_id, collection_id, initial_stock, image_url, images, variants } = req.body;
+  const { name, description, price, initial_stock, image_url, images, variants } = req.body;
+  const category_id   = uuidOrNull(req.body.category_id);
+  const collection_id = uuidOrNull(req.body.collection_id);
 
   const slug = name
     ? name.toLowerCase()
@@ -1108,7 +1114,9 @@ app.post('/api/admin/inventory/products', adminOnly, async (req, res) => {
 });
 
 app.put('/api/admin/inventory/products/:id', adminOnly, async (req, res) => {
-  const { name, description, price, category_id, collection_id, image_url, images, variants } = req.body;
+  const { name, description, price, image_url, images, variants } = req.body;
+  const category_id   = uuidOrNull(req.body.category_id);
+  const collection_id = uuidOrNull(req.body.collection_id);
   try {
     let stockUpdate = '';
     const params = [
@@ -1406,6 +1414,16 @@ app.listen(PORT, '0.0.0.0', async () => {
       ['unisex', 'Hoodies & Sweatshirts', 'unisex-hoodies',         'Everyday layers in Ankara print panels'],
       ['unisex', 'Kimonos & Dusters',     'unisex-kimonos-dusters', 'Open-front statement layers'],
       ['unisex', 'Joggers',               'unisex-joggers',         'Comfortable, versatile joggers'],
+
+      // Unisex - requested by the client
+      ['unisex',      'Jackets',    'unisex-jackets',  'Tailored print jackets cut to sit well on any frame'],
+      ['unisex',      'T-Shirts',   'unisex-t-shirts', 'Relaxed-fit tees in heavyweight cotton with print trims'],
+
+      // Accessories - requested by the client
+      ['accessories', 'Neckpieces', 'neckpieces',      'Statement collars, chokers and layered necklaces'],
+      ['accessories', 'Bracelets',  'bracelets',       'Beaded, brass and cuff bracelets made to stack'],
+      ['accessories', 'Rings',      'rings',           'Sculptural rings in brass and mixed metals'],
+      ['accessories', 'Earrings',   'earrings',        'Drops, hoops and studs to finish a look'],
     ];
 
     for (const [catSlug, name, slug, description] of seedCollections) {
