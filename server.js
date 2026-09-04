@@ -860,7 +860,7 @@ const loginAttempts = new Map();
 const LOGIN_MAX = 6;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 
-const loginThrottle = (req, res, next) => {
+function loginThrottle(req, res, next) {
   const key = req.ip || 'unknown';
   const now = Date.now();
   const rec = loginAttempts.get(key);
@@ -873,7 +873,7 @@ const loginThrottle = (req, res, next) => {
     return res.status(429).json({ success: false, error: `Too many attempts. Try again in ${mins} minute(s).` });
   }
   next();
-};
+}
 
 const noteFailedLogin = (req) => {
   const key = req.ip || 'unknown';
