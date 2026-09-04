@@ -1558,11 +1558,11 @@ app.listen(PORT, '0.0.0.0', async () => {
     for (const [catSlug, name, slug, description] of seedCollections) {
       await pool.query(`
         INSERT INTO collections (category_id, name, slug, description)
-        SELECT c.id, $2, $3, $4
+        SELECT c.id, $2::varchar, $3::varchar, $4::text
         FROM categories c
         WHERE c.slug = $1
-        AND NOT EXISTS (SELECT 1 FROM collections WHERE slug = $3)
-      `, [catSlug, name, slug, description]);
+        AND NOT EXISTS (SELECT 1 FROM collections WHERE slug = $5)
+      `, [catSlug, name, slug, description, slug]);
     }
 
     console.log('✅ Seed: unisex category + new collections ready');
