@@ -2,6 +2,7 @@ const express = require('express');
 const { Pool } = require('pg');
 const cors = require('cors');
 const bcrypt = require('bcrypt');
+const crypto = require('crypto');
 const { Resend } = require('resend');
 require('dotenv').config();
 
@@ -301,7 +302,7 @@ app.get('/api/test-email', async (req, res) => {
 
 // ========== ADMIN AUTH ==========
 // Credentials validated server-side against the database using bcrypt
-app.post('/api/admin/auth/login', async (req, res) => {
+app.post('/api/admin/auth/login', loginThrottle, async (req, res) => {
   const { email, password } = req.body;
 
   if (!email || !password) {
@@ -312,6 +313,7 @@ app.post('/api/admin/auth/login', async (req, res) => {
     const result = await pool.query('SELECT * FROM admins WHERE email = $1', [email]);
 
     if (result.rows.length === 0) {
+      noteFailedLogin(req);
       console.log(`❌ Failed admin login attempt for: ${email}`);
       return res.status(401).json({ success: false, error: 'Invalid email or password' });
     }
@@ -320,10 +322,15 @@ app.post('/api/admin/auth/login', async (req, res) => {
     const match = await bcrypt.compare(password, admin.password);
 
     if (match) {
-      const token = Buffer.from(`${email}:${Date.now()}`).toString('base64');
+      if (!JWT_SECRET) {
+        console.error('Login blocked: JWT_SECRET is not set on this server.');
+        return res.status(500).json({ success: false, error: 'Server is not configured for sign-in. Contact the administrator.' });
+      }
+      const token = signToken({ sub: email, role: 'admin' });
       console.log(`✅ Admin login: ${email}`);
       res.json({ success: true, token, email });
     } else {
+      noteFailedLogin(req);
       console.log(`❌ Failed admin login attempt for: ${email}`);
       res.status(401).json({ success: false, error: 'Invalid email or password' });
     }
@@ -764,22 +771,144 @@ app.get('/api/orders/:id', async (req, res) => {
 });
 
 // ========== ADMIN MIDDLEWARE ==========
+// -------------------------------------------------------------
+// ADMIN AUTHENTICATION
+//
+// Previously adminOnly trusted the Origin header alone. Origin is set by
+// browsers but freely chosen by any other client, so every admin route -
+// orders, customer names, phone numbers, delivery addresses - was readable
+// by anyone who knew the URL.
+//
+// Now: login issues a signed HS256 token; adminOnly verifies the signature
+// and expiry on every request. The Origin check is kept as a second layer,
+// not the only one. Signing uses Node's crypto, so there is no new
+// dependency to install.
+// -------------------------------------------------------------
+
+const JWT_SECRET = process.env.JWT_SECRET || '';
+const TOKEN_TTL_SECONDS = parseInt(process.env.ADMIN_SESSION_HOURS || '12', 10) * 3600;
+
+if (!JWT_SECRET && process.env.NODE_ENV === 'production') {
+  console.error('FATAL: JWT_SECRET is not set. Admin routes will reject every request.');
+}
+
+const b64url = (buf) =>
+  Buffer.from(buf).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+const signToken = (payload) => {
+  const header = { alg: 'HS256', typ: 'JWT' };
+  const now = Math.floor(Date.now() / 1000);
+  const body = { ...payload, iat: now, exp: now + TOKEN_TTL_SECONDS };
+  const data = `${b64url(JSON.stringify(header))}.${b64url(JSON.stringify(body))}`;
+  const sig  = b64url(crypto.createHmac('sha256', JWT_SECRET).update(data).digest());
+  return `${data}.${sig}`;
+};
+
+const verifyToken = (token) => {
+  if (!JWT_SECRET || typeof token !== 'string') return null;
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+
+  const data     = `${parts[0]}.${parts[1]}`;
+  const expected = b64url(crypto.createHmac('sha256', JWT_SECRET).update(data).digest());
+
+  // Constant-time compare so the signature can't be guessed byte by byte.
+  const a = Buffer.from(parts[2]);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+
+  try {
+    const body = JSON.parse(Buffer.from(parts[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString());
+    if (!body.exp || body.exp < Math.floor(Date.now() / 1000)) return null;
+    return body;
+  } catch {
+    return null;
+  }
+};
+
+const adminOrigins = [
+  'https://cesa-admin.up.railway.app',
+  'https://admin.cesadesigns.com',
+  'http://localhost:5174',
+  'http://localhost:3001',
+  'https://cesa-designs-admin-production.up.railway.app'
+];
+
 const adminOnly = (req, res, next) => {
-  const origin = req.headers.origin;
-  const adminOrigins = [
-    'https://cesa-admin.up.railway.app',
-    'https://admin.cesadesigns.com',
-    'http://localhost:5174',
-    'http://localhost:3001',
-    'https://cesa-designs-admin-production.up.railway.app'
-  ];
   if (process.env.NODE_ENV === 'production') {
-    if (!origin || !adminOrigins.includes(origin)) {
+    const origin = req.headers.origin;
+    // Browsers omit Origin on same-origin GETs, so only reject a wrong one.
+    if (origin && !adminOrigins.includes(origin)) {
       return res.status(403).json({ error: 'Admin access only' });
     }
   }
+
+  const header = req.headers.authorization || '';
+  const token  = header.startsWith('Bearer ') ? header.slice(7) : '';
+  const claims = verifyToken(token);
+
+  if (!claims) {
+    return res.status(401).json({ error: 'Session expired. Please sign in again.' });
+  }
+
+  req.admin = { email: claims.sub };
   next();
 };
+
+// Simple in-memory throttle so the login endpoint can't be brute-forced.
+const loginAttempts = new Map();
+const LOGIN_MAX = 6;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+
+const loginThrottle = (req, res, next) => {
+  const key = req.ip || 'unknown';
+  const now = Date.now();
+  const rec = loginAttempts.get(key);
+
+  if (rec && now - rec.first > LOGIN_WINDOW_MS) loginAttempts.delete(key);
+
+  const cur = loginAttempts.get(key);
+  if (cur && cur.count >= LOGIN_MAX) {
+    const mins = Math.ceil((LOGIN_WINDOW_MS - (now - cur.first)) / 60000);
+    return res.status(429).json({ success: false, error: `Too many attempts. Try again in ${mins} minute(s).` });
+  }
+  next();
+};
+
+const noteFailedLogin = (req) => {
+  const key = req.ip || 'unknown';
+  const rec = loginAttempts.get(key);
+  if (rec) rec.count += 1;
+  else loginAttempts.set(key, { count: 1, first: Date.now() });
+};
+
+// -------------------------------------------------------------
+// CLOUDINARY SIGNED UPLOADS
+//
+// The admin panel uploads files straight to Cloudinary. We only hand out a
+// short-lived signature, so the API secret never reaches the browser and
+// large files never pass through this server.
+// -------------------------------------------------------------
+app.get('/api/admin/cloudinary/signature', adminOnly, (req, res) => {
+  const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+  const apiKey    = process.env.CLOUDINARY_API_KEY;
+  const apiSecret = process.env.CLOUDINARY_API_SECRET;
+
+  if (!cloudName || !apiKey || !apiSecret) {
+    return res.status(501).json({
+      error: 'Cloudinary uploads are not configured. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET, then redeploy. You can still paste an image link.'
+    });
+  }
+
+  const timestamp = Math.floor(Date.now() / 1000);
+  const folder    = process.env.CLOUDINARY_FOLDER || 'cesa-products';
+
+  // Cloudinary signs the alphabetically sorted params, secret appended.
+  const toSign    = `folder=${folder}&timestamp=${timestamp}`;
+  const signature = crypto.createHash('sha1').update(toSign + apiSecret).digest('hex');
+
+  res.json({ cloudName, apiKey, timestamp, folder, signature });
+});
 
 // ========== ADMIN ORDER ENDPOINTS ==========
 app.get('/api/admin/orders', adminOnly, async (req, res) => {
